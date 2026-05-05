@@ -1,0 +1,15 @@
+casadi>=3.6,<4.0
+numpy>=1.26,<2.1
+scipy>=1.11
+matplotlib>=3.8
+pyyaml>=6.0
+gymnasium>=0.29
+stable-baselines3>=2.3
+torch>=2.2
+numba>=0.59
+pandas>=2.1
+pytest>=8.0
+pytest-timeout>=2.2
+flake8>=7.0
+mypy>=1.8
+ipykernel>=6.29

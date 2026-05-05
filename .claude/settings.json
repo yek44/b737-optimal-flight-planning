@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "model": "sonnet",
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(python *)",
+      "Bash(python -m *)",
+      "Bash(pytest *)",
+      "Bash(flake8 *)",
+      "Bash(mypy *)",
+      "Bash(pip install -r requirements.txt)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git checkout *)",
+      "Bash(git branch *)",
+      "Bash(git switch *)",
+      "Read(./**)",
+      "Edit(./src/**)",
+      "Edit(./tests/**)",
+      "Edit(./notebooks/**)",
+      "Edit(./report/**)",
+      "Edit(./data/**)",
+      "Write(./src/**)",
+      "Write(./tests/**)",
+      "Write(./report/**)",
+      "Write(./data/**)",
+      "Write(./notebooks/**)"
+    ],
+    "ask": [
+      "Bash(pip install *)",
+      "Bash(git push *)",
+      "Bash(git reset --hard *)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(rm -rf /)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./gurobi.lic)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          { "type": "command", "command": "bash .claude/hooks/lint-on-edit.sh \"${tool_input.file_path}\"" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash .claude/hooks/notify-done.sh" }
+        ]
+      }
+    ]
+  }
+}

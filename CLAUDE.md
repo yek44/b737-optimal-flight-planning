@@ -46,6 +46,7 @@ report/          LaTeX source + final report.pdf
 - **Units**: SI internally (meters, m/s, kg, radians, seconds). Degrees and kg-fuel only at I/O boundaries (config files, plots, report).
 - **Coordinates**: integrate dynamics in flat-Earth ENU meters with per-flight reference origin `(lambda0, phi0)`. Convert ENU back to (lambda deg, phi deg) only when (i) querying the wind polynomial Wx/Wy and (ii) producing plots.
 - **Angles**: radians internally always. Use `numpy.unwrap` on `psi` before plotting.
+- **Heading `psi` is measured CCW from east (math convention)**, NOT clockwise from north (aviation). The PDF equations `dx = v*cos(psi)`, `dy = v*sin(psi)` force this. So `psi=0` -> heading east; `psi=pi/2` -> heading north. Table 3's `psi_0 = 0 deg` means initial heading due east.
 - **Mass monotonicity**: assert `dm/dt <= 0` everywhere; mass cannot grow.
 - **Free final time**: `tf` is a decision variable; integrate on normalized `tau in [0,1]`, scale derivatives by `tf`.
 

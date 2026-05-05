@@ -1,0 +1,8 @@
+# Polynomial wind-field coefficients from Term Project.pdf Table 2.
+# Polynomial form (lambda, phi in degrees, output in m/s):
+#   W(lambda, phi) = c0 + c1*lambda + c2*phi + c3*lambda*phi
+#                  + c4*lambda^2 + c5*phi^2
+#                  + c6*lambda^2*phi + c7*lambda*phi^2 + c8*lambda^2*phi^2
+# Coefficient order: [c0, c1, c2, c3, c4, c5, c6, c7, c8].
+Wx: [-21.151, 10.0039, 1.1081, -0.5239, -0.1297, -0.006, 0.0073, 0.0066, -0.0001]
+Wy: [-65.3035, 17.6148, 1.0855, -0.7001, -0.5508, -0.003, 0.0241, 0.0064, -0.000227]

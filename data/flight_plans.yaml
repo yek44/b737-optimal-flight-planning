@@ -1,0 +1,41 @@
+# Flight plans from Term Project.pdf Table 3.
+# Initial conditions and destination waypoints.
+# Conventions: lambda = longitude [deg, east-positive], phi = latitude [deg, north-positive].
+# h = altitude [m], v = TAS [m/s], psi = heading [deg, measured from north, clockwise], m = mass [kg].
+flights:
+  - id: 1
+    initial:
+      lambda_deg: -4.0
+      phi_deg: 40.0
+      h_m: 8000.0
+      v_mps: 200.0
+      psi_deg: 0.0
+      m_kg: 71000.0
+    destination:
+      lambda_deg: 30.0
+      phi_deg: 52.0
+      h_m: 9000.0
+  - id: 2
+    initial:
+      lambda_deg: 30.0
+      phi_deg: 50.0
+      h_m: 10000.0
+      v_mps: 220.0
+      psi_deg: 225.0
+      m_kg: 56000.0
+    destination:
+      lambda_deg: 20.0
+      phi_deg: 45.0
+      h_m: 9000.0
+  - id: 3
+    initial:
+      lambda_deg: 15.0
+      phi_deg: 40.0
+      h_m: 9000.0
+      v_mps: 210.0
+      psi_deg: 0.0
+      m_kg: 66000.0
+    destination:
+      lambda_deg: 15.0
+      phi_deg: 53.0
+      h_m: 7000.0

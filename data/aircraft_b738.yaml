@@ -1,0 +1,27 @@
+# Boeing 737-800 BADA-style performance coefficients from Term Project.pdf Table 1.
+name: B737-800
+fuel:
+  Cf_cr: 0.92958     # cruise fuel correction (dimensionless)
+  Cf1: 0.70057       # 1st thrust-specific fuel consumption coeff [kg/(min*kN)]
+  Cf2: 1068.1        # 2nd TSFC coeff [kt]
+thrust:
+  CT_cr: 0.95        # cruise thrust correction (dimensionless)
+  CT_c1: 146590.0    # 1st max climb thrust coeff [N]
+  CT_c2: 53872.0     # 2nd max climb thrust coeff [ft]
+  CT_c3: 3.0453e-11  # 3rd max climb thrust coeff [1/ft^2]
+aerodynamics:
+  Cd0: 0.025452      # parasitic drag coefficient
+  k: 0.035815        # induced drag coefficient
+  S: 124.65          # wing reference area [m^2]
+limits:
+  m_OEW_kg: 41413.0  # operating empty weight (B737-800 typical)
+  v_min_mps: 120.0
+  v_max_mps: 270.0
+  h_min_m: 0.0
+  h_max_m: 13000.0
+  gamma_min_deg: -6.0
+  gamma_max_deg: 10.0
+  mu_min_deg: -30.0
+  mu_max_deg: 30.0
+  delta_min: 0.05
+  delta_max: 1.0

@@ -1,0 +1,17 @@
+{
+  "method": "rl",
+  "flight_id": 3,
+  "fuel_total_kg": 15186.428837561798,
+  "duration_s": 24000.0,
+  "cost": 11166904630.849268,
+  "converged": true,
+  "origin_lambda_deg": 15.0,
+  "origin_phi_deg": 40.0,
+  "solver_meta": {
+    "algo": "PPO",
+    "dt_s": 10.0,
+    "n_steps": 2401
+  },
+  "n_states": 2401,
+  "n_controls": 2400
+}

@@ -1,0 +1,19 @@
+{
+  "method": "direct",
+  "flight_id": 2,
+  "fuel_total_kg": 3236.035014428322,
+  "duration_s": 6995.750498949711,
+  "cost": 3585.822539375808,
+  "converged": true,
+  "origin_lambda_deg": 30.0,
+  "origin_phi_deg": 50.0,
+  "solver_meta": {
+    "scheme": "hermite-simpson-compressed",
+    "n_nodes": 41,
+    "iter_count": 145,
+    "return_status": "Solve_Succeeded",
+    "ipopt_linear_solver": "mumps"
+  },
+  "n_states": 41,
+  "n_controls": 41
+}

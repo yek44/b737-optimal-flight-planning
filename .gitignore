@@ -53,6 +53,14 @@ ipopt.log
 runs/
 tb_logs/
 *.pth
+models/
+
+# LaTeX build artifacts
+report/*.aux
+report/*.log
+report/*.out
+report/*.toc
+report/*.synctex.gz
 
 # Local Claude overrides (personal, not shared)
 .claude/settings.local.json

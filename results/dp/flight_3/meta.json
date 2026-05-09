@@ -1,0 +1,22 @@
+{
+  "method": "dp",
+  "flight_id": 3,
+  "fuel_total_kg": 3395.040702435086,
+  "duration_s": 6750.0,
+  "cost": 9003732.540702434,
+  "converged": true,
+  "origin_lambda_deg": 15.0,
+  "origin_phi_deg": 40.0,
+  "solver_meta": {
+    "model": "reduced-2D-cruise",
+    "h_cruise_m": 10000.0,
+    "v_cruise_mps": 235.0,
+    "delta_cruise": 0.55,
+    "n_cells": 200,
+    "n_headings": 32,
+    "dt_s": 30.0,
+    "wall_time_s": 16.71476936340332
+  },
+  "n_states": 226,
+  "n_controls": 226
+}

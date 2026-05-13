@@ -6,7 +6,6 @@ from pathlib import Path
 
 import numpy as np
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from ..common.io_config import load_aircraft
 from ..common.plotting import make_eight_plots
@@ -18,22 +17,12 @@ def evaluate(flight_id: int, models_root: Path, results_root: Path) -> FlightRes
     indir = models_root / f"flight_{flight_id}"
     model = PPO.load(indir / "policy.zip", device="cpu")
 
-    # Re-create the env directly so we keep full trajectory history;
-    # apply the saved VecNormalize obs statistics manually instead of
-    # going through VecEnv (which auto-resets on done and clobbers
-    # `inner.history_*`).
     inner = FlightPlannerEnv(flight_id=flight_id, cfg=EnvConfig())
-    base_env = DummyVecEnv([lambda: inner])
-    vn = VecNormalize.load(str(indir / "vec_normalize.pkl"), base_env)
-    vn.training = False
-    vn.norm_reward = False
-
     raw_obs, _ = inner.reset(seed=0)
     done = False
     truncated = False
     while not (done or truncated):
-        norm_obs = vn.normalize_obs(raw_obs.reshape(1, -1))
-        action, _ = model.predict(norm_obs, deterministic=True)
+        action, _ = model.predict(raw_obs.reshape(1, -1), deterministic=True)
         raw_obs, _, done, truncated, _ = inner.step(action[0])
 
     t, state, control = inner.trajectory_arrays()

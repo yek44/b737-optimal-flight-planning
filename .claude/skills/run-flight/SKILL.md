@@ -1,6 +1,6 @@
 ---
 name: run-flight
-description: Runs a single flight through one method (direct, dp, or rl) and prints a one-page summary (cost, fuel, duration, convergence). Use when iterating on a method.
+description: Runs a single flight through one method (direct or rl) and prints a one-page summary (cost, fuel, duration, convergence). Use when iterating on a method.
 allowed-tools: Bash, Read
 ---
 
@@ -9,7 +9,7 @@ allowed-tools: Bash, Read
 Runs `python -m src.<method>.solve --flight <n>` and summarizes the result.
 
 ## Arguments (parse from $ARGUMENTS or ask the user)
-- `method`: one of `direct`, `dp`, `rl`
+- `method`: one of `direct`, `rl`
 - `flight`: 1, 2, or 3
 
 ## Steps

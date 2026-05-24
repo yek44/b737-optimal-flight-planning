@@ -1,1 +1,1 @@
-"""Common modules shared across direct, dp, and rl methods."""
+"""Common modules shared across the direct and RL methods."""

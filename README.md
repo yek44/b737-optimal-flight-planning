@@ -1,11 +1,11 @@
 # UCK 439E Term Project - B737-800 Wind-Field Flight Planning
 
 Optimized cruise-phase trajectories for a Boeing 737-800 under a polynomial wind
-field, solved three different ways for comparison:
+field, solved two different ways for comparison:
 
-1. **Direct collocation** - CasADi + IPOPT, Hermite-Simpson
-2. **Dynamic Programming** - reduced 2D cruise model, value iteration
-3. **Reinforcement Learning** - Stable-Baselines3 (PPO primary, SAC backup)
+1. **Direct collocation** - CasADi + IPOPT, Hermite-Simpson (benchmark)
+2. **Reinforcement Learning** - Stable-Baselines3 PPO + behavioural-cloning warm
+   start + DAgger-style expert correction
 
 Course: UCK 439E (Introduction to Optimal Control), ITU
 Due: 2026-06-07
@@ -24,20 +24,14 @@ pytest tests/ -v
 ## Reproducing the report figures
 
 ```bash
-# Direct collocation (3 flights)
-python -m src.direct.solve --flight 1
-python -m src.direct.solve --flight 2
-python -m src.direct.solve --flight 3
+# Direct collocation (3 flights, ~1 min CPU total)
+python -m src.direct.solve --flight all --warm-start
 
-# Dynamic programming
-python -m src.dp.solve --flight 1
-python -m src.dp.solve --flight 2
-python -m src.dp.solve --flight 3
-
-# Reinforcement learning
-python -m src.rl.train --flight 1   # ~30 min CPU
-python -m src.rl.evaluate --flight 1
-# ... repeat for flights 2, 3
+# Reinforcement learning (~1-2 h CPU per flight on a single core)
+python -m src.rl.pipeline --flight 1
+python -m src.rl.pipeline --flight 2
+python -m src.rl.pipeline --flight 3
+python -m src.rl.evaluate --flight all
 
 # Comparison figures + tables
 python -m src.compare.make_report_figs

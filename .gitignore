@@ -54,6 +54,10 @@ runs/
 tb_logs/
 *.pth
 models/
+logs/
+
+# Claude harness scratch
+.claude/scheduled_tasks.lock
 
 # LaTeX build artifacts
 report/*.aux

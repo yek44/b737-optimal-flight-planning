@@ -21,8 +21,8 @@ Wind enters via Wx, Wy (m/s east/north) which are looked up at the
 current (lambda, phi) by converting ENU back to LLA via the per-flight
 origin.
 
-The same function works under numpy (forward simulation, DP, RL) and
-CasADi (NLP) by passing the appropriate `math` backend.
+The same function works under numpy (forward simulation, RL rollouts)
+and CasADi (NLP) by passing the appropriate `math` backend.
 """
 from __future__ import annotations
 
@@ -106,7 +106,7 @@ def dynamics_np(
     wf: WindField,
     origin: LLAOrigin,
 ) -> np.ndarray:
-    """numpy-only wrapper that returns a (6,) array (for RL, DP, RK4)."""
+    """numpy-only wrapper that returns a (6,) array (for RL rollouts / RK4)."""
     deriv = dynamics_rhs(state, control, ac, wf, origin, math=np)
     return np.asarray(deriv, dtype=float)
 

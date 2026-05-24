@@ -6,9 +6,9 @@ The polynomial form (lambda, phi in degrees, output in m/s) is:
                 + c4*lam^2 + c5*phi^2
                 + c6*lam^2*phi + c7*lam*phi^2 + c8*lam^2*phi^2
 
-Two backends: numpy (used by DP, RL, and verification) and the same
-expression tree for CasADi (used inside the NLP). The math facade
-parameter dispatches them.
+Two backends: numpy (used by the RL env and verification scripts) and
+the same expression tree for CasADi (used inside the direct-collocation
+NLP). The math facade parameter dispatches them.
 """
 from __future__ import annotations
 

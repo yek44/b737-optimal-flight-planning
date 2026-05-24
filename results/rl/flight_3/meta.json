@@ -1,17 +1,18 @@
 {
   "method": "rl",
   "flight_id": 3,
-  "fuel_total_kg": 7083.1171093934245,
-  "duration_s": 24000.0,
-  "cost": 1968388031474.8406,
+  "fuel_total_kg": 4248.842017605115,
+  "duration_s": 6970.0,
+  "cost": 59193953.22533106,
   "converged": true,
   "origin_lambda_deg": 15.0,
   "origin_phi_deg": 40.0,
   "solver_meta": {
-    "algo": "PPO",
+    "algo": "BC+DAgger",
     "dt_s": 10.0,
-    "n_steps": 2401
+    "n_steps": 698,
+    "closest_dist_m": 2452.6862023331173
   },
-  "n_states": 2401,
-  "n_controls": 2400
+  "n_states": 698,
+  "n_controls": 697
 }

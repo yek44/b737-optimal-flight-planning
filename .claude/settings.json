@@ -45,11 +45,20 @@
     ]
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          { "type": "command", "command": "bash .claude/hooks/block-result-overwrites.sh \"${tool_input.file_path}\"" }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
         "hooks": [
-          { "type": "command", "command": "bash .claude/hooks/lint-on-edit.sh \"${tool_input.file_path}\"" }
+          { "type": "command", "command": "bash .claude/hooks/lint-on-edit.sh \"${tool_input.file_path}\"" },
+          { "type": "command", "command": "bash .claude/hooks/auto-test-dynamics.sh \"${tool_input.file_path}\"" }
         ]
       }
     ],

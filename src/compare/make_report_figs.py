@@ -1,6 +1,6 @@
 """Build the cross-method overlay figures and summary tables.
 
-Reads `results/{direct,dp,rl}/flight_<id>/` and writes:
+Reads `results/{direct,rl}/flight_<id>/` and writes:
   results/compare/flight_<id>/{xy, h_time, ...}.png   (overlays)
   results/compare/summary.csv                          (table)
   results/compare/summary.md                           (rendered table)
@@ -16,7 +16,7 @@ from ..common.plotting import overlay_methods
 from ..common.results import FlightResult
 
 
-METHODS = ("direct", "dp", "rl")
+METHODS = ("direct", "rl")
 
 
 def _safe_load(method: str, flight_id: int,

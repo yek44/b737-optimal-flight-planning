@@ -1,6 +1,6 @@
 """Per-flight result dataclass + npz/json persistence.
 
-Every method (direct, dp, rl) returns a `FlightResult` so the comparison
+Every method (direct, rl) returns a `FlightResult` so the comparison
 script can load and overlay them uniformly.
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ class FlightResult:
         - `u` may have shape (N-1, 3) for collocation or (N, 3) for
           piecewise-constant; consumers should treat both.
     """
-    method: str             # "direct" | "dp" | "rl"
+    method: str             # "direct" | "rl"
     flight_id: int          # 1, 2, 3
     t: np.ndarray           # (N,) seconds
     state: np.ndarray       # (N, 6) -- (x, y, h, v, psi, m) in SI/ENU

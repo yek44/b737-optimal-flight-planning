@@ -5,15 +5,18 @@ Single-student Operations Research / Optimal Control term project. Course UCK 43
 
 Goal: optimize B737-800 cruise-phase trajectories under polynomial wind fields for 3 prescribed flights, using:
 - (a) Direct collocation (CasADi + IPOPT, Hermite-Simpson)
-- (b) Both Dynamic Programming (reduced 2D cruise model) AND Reinforcement Learning (Stable-Baselines3 PPO/SAC)
+- (b) Reinforcement Learning (Stable-Baselines3 PPO + BC warm-start + DAgger expert correction)
 
 Detailed problem spec: see `Term Project.pdf` in repo root.
+
+Note: An earlier reduced-state DP module was implemented and later dropped — the 2-D
+cruise model lost too much realism (fixed altitude/airspeed/throttle) to be a meaningful
+comparison against the 6-state direct and RL solutions.
 
 ## Tech stack (locked)
 - Python 3.11
 - CasADi + IPOPT/MUMPS (precompiled wheel) - direct collocation
 - numpy, scipy, matplotlib - common utilities + plotting
-- numba - jitted DP Bellman backup
 - gymnasium + stable-baselines3 + torch (CPU) - RL
 - pyyaml - config files
 - pytest, flake8, mypy - quality gates
@@ -32,8 +35,7 @@ pytest tests/ -v
 ```
 src/common/      atmosphere, wind_field, aircraft, dynamics, coordinates, cost, plotting, results
 src/direct/      Hermite-Simpson collocation (CasADi)
-src/dp/          reduced-state DP (numba-jitted)
-src/rl/          Gymnasium env + SB3 training
+src/rl/          Gymnasium env + BC + DAgger + SB3 PPO training
 src/compare/     overlay figures for the report
 data/            flight_plans.yaml, aircraft_b738.yaml, wind_field.yaml
 tests/           pytest suites for common modules
@@ -81,25 +83,34 @@ report/          LaTeX source + final report.pdf
 - Plot policy: every figure has axis labels, units in brackets `[m]`, `[m/s]`, `[deg]`, `[s]`, and a legend. No bare titles.
 
 ## Testing rule
-Any change touching `src/common/dynamics.py` or `src/common/wind_field.py` must rerun `tests/test_dynamics.py` and `tests/test_wind_field.py` before commit.
+Any change touching `src/common/dynamics.py` or `src/common/wind_field.py` must rerun `tests/test_dynamics.py` and `tests/test_wind_field.py` before commit. The `auto-test-dynamics.sh` PostToolUse hook automates this; do not rely on memory.
 
 ## Subagents available
 - `math-verifier` - verifies Python implementations against the PDF equations (sign conventions, units, edge cases). Invoke after editing dynamics/wind/cost.
 - `plot-reviewer` - checks generated PNGs for axis labels, units, legends, sensible y-ranges.
+- `report-reviewer` - pre-submission audit of `report/report.tex` (placeholders, broken refs/cites, missing figures, numerical inconsistencies between table and inline text). Invoke right before recompiling the final `report.pdf`.
 
-## Slash commands
+## Slash commands / skills
 - `/validate-code` - flake8 + mypy + pytest.
 - `/run-flight` - wraps `python -m src.<method>.solve --flight {1,2,3}` and dumps a one-page summary.
+- `/eval-rl-all` - roll out trained RL policies for all 3 flights, regenerate the 8 per-flight plots, build cross-method overlays, and print a one-page summary. Use after `src.rl.pipeline` finishes.
+- `/recompile-report` - two-pass pdflatex on `report/report.tex`. Use after the report or any `results/compare/` figure changes.
+
+## Hooks (auto-fired by the harness)
+- `lint-on-edit.sh` (PostToolUse on Edit|Write) - non-blocking flake8 on edited .py files.
+- `auto-test-dynamics.sh` (PostToolUse on Edit|Write) - reruns `tests/test_dynamics.py` and `tests/test_wind_field.py` whenever `src/common/{dynamics,wind_field,aircraft,cost}.py` is edited.
+- `block-result-overwrites.sh` (PreToolUse on Edit|Write) - hard-blocks manual edits inside `results/{direct,rl,compare}/flight_*` so solver artefacts are only written by the responsible pipelines.
+- `notify-done.sh` (Stop) - bell + console banner when Claude finishes.
 
 ## Model strategy
-- Opus for: algorithm design (Hermite-Simpson formulation, DP reduction, RL reward shaping), debugging IPOPT non-convergence, report structuring.
+- Opus for: algorithm design (Hermite-Simpson formulation, RL reward shaping, DAgger expert correction), debugging IPOPT non-convergence, report structuring.
 - Sonnet (default) for: implementation, tests, plotting, edits.
 - Haiku for: trivial renames, doc tweaks, plot-reviewer subagent.
 - Plan mode at the start of every non-trivial session.
 - `ultrathink` only when stuck on math derivations or IPOPT convergence.
 
 ## Git workflow
-- One branch per method: `method/direct`, `method/dp`, `method/rl`. Merge to `main` when working on Flight 1.
+- One branch per method: `method/direct`, `method/rl`. Merge to `main` when working on Flight 1.
 - Conventional-ish commits: `feat(direct): hermite-simpson collocation builder`.
 - Never `git push --force`; never commit `.venv/`, `results/*.npz` larger than 1 MB, `__pycache__/`.
 

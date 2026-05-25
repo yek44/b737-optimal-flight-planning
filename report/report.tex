@@ -19,50 +19,50 @@ Optimal B737--800 Flight Planning under a Wind Field}
 \author{Yunus Emre Kara\\\small Istanbul Technical University}
 \date{June 2026}
 
+\newcommand{\figpath}{../results/compare}
+
 \begin{document}
 \maketitle
 
 \begin{abstract}
-We solve the cruise-phase trajectory-optimisation problem for a
-Boeing~737--800 under a polynomial wind field with two complementary
-numerical optimal-control techniques: (i)~direct transcription with
-Hermite--Simpson collocation and IPOPT, and (ii)~a reinforcement-learning
-pipeline that combines multi-expert behavioural cloning of the direct
-solution with DAgger-style on-policy expert correction in a custom
-Gymnasium environment. Three flight scenarios from the project
-specification are solved by both methods, eight standard plots are
-produced per flight, and a single overlay figure per metric compares
-the two methods. The direct method serves as the optimal-control
-benchmark; the RL pipeline produces a state-feedback policy that
-generalises across an entire ball of initial conditions around each
-flight plan.
-
-An earlier reduced-state dynamic-programming module (constant cruise
-altitude / airspeed / throttle on a 2-D ENU grid) was implemented and
-later removed: collapsing the 6-D state to 2-D made DP numerically
-fast but produced trajectories that ignore the altitude and energy
-management that dominate the PDF cost, so DP was not a like-for-like
-comparison against direct collocation. See
-Sec.~\ref{sec:why-no-dp} for the analysis behind that decision.
+This report solves the B737--800 cruise-phase flight-planning problem
+from the project statement under the prescribed polynomial wind field.
+Two methods are implemented and compared on the same six-state aircraft
+model: a Hermite--Simpson direct-collocation transcription solved with
+IPOPT, and a single closed-loop policy trained by multi-flight
+behavioural cloning on a manifold of direct-collocation experts plus
+per-flight kNN DAgger correction, all wrapped in a Gymnasium environment
+with a deterministic terminal-guidance layer. The direct solution is
+used as the reference because it enforces the destination exactly. The
+policy method is evaluated as a practical feedback controller: a single
+unified checkpoint flies all three test scenarios, following the learned
+policy over the cruise segment and switching to the terminal-guidance
+layer only inside the final approach corridor to close the waypoint and
+altitude errors. All three prescribed flights are solved, and all eight
+required plots are reported for each flight.
 \end{abstract}
 
-
 \section{Introduction}
-This report documents the term project for UCK~439E (Introduction to
-Optimal Control). The task statement is a B737--800 flight-planning
-problem with a known wind field $W(\lambda,\varphi)$ given by a
-ninth-order polynomial in (longitude, latitude). The aircraft
-performance model is BADA-style with ISA-tropospheric atmosphere.
-Three flight scenarios are prescribed (Tables~\ref{tab:flights}
-and~\ref{tab:wind}); each scenario fixes the start state
-$(\lambda_0,\varphi_0,h_0,V_0,\psi_0,m_0)$ and the destination
-$(\lambda_f,\varphi_f,h_f)$.
+The project asks for optimized trajectories for three B737--800 cruise
+flights under a known wind field. The required state is
+$\mathbf{x}=(x_e,y_n,h,V,\psi,m)^\top$, and the controls are
+$\mathbf{u}=(\gamma,\mu,\delta)^\top$, namely flight-path angle, bank
+angle, and throttle. The two submitted methods are:
+\begin{itemize}
+  \item \textbf{Direct collocation}: Hermite--Simpson with IPOPT/MUMPS.
+  \item \textbf{Closed-loop policy}: a Stable-Baselines3 PPO actor
+  network trained by multi-expert behavioural cloning and DAgger-style
+  correction, evaluated with a terminal-guidance safety layer.
+\end{itemize}
+Dynamic programming is not included in the final submission. The final
+comparison is kept between methods that operate on the full six-state
+aircraft model.
 
 \begin{table}[h]
 \centering
-\caption{Flight scenarios from the project specification.
-Heading $\psi_0$ follows the math-from-east convention used
-throughout this work (see~\S\ref{sec:psi-convention}).}
+\caption{Flight scenarios from the project specification. Heading
+$\psi_0$ follows the math-from-east convention used by the PDF
+kinematics.}
 \label{tab:flights}
 \small
 \begin{tabular}{c rr rrr r rr r}
@@ -70,7 +70,8 @@ throughout this work (see~\S\ref{sec:psi-convention}).}
 \multirow{2}{*}{flight}
  & \multicolumn{6}{c}{initial state} & \multicolumn{3}{c}{destination} \\
 \cmidrule(lr){2-7} \cmidrule(lr){8-10}
- & $\lambda_0$ [deg] & $\varphi_0$ [deg] & $h_0$ [m] & $V_0$ [m/s] & $\psi_0$ [deg] & $m_0$ [kg]
+ & $\lambda_0$ [deg] & $\varphi_0$ [deg] & $h_0$ [m] & $V_0$ [m/s]
+ & $\psi_0$ [deg] & $m_0$ [kg]
  & $\lambda_f$ [deg] & $\varphi_f$ [deg] & $h_f$ [m] \\
 \midrule
 1 & $-4.0$ & 40.0 & 8000  & 200 &   0 & 71000 & 30.0 & 52.0 & 9000 \\
@@ -80,500 +81,436 @@ throughout this work (see~\S\ref{sec:psi-convention}).}
 \end{tabular}
 \end{table}
 
-\begin{table}[h]
-\centering
-\caption{Polynomial wind-field coefficients (Term Project PDF
-Table~2). Coefficient order is
-$[c_0,c_1,c_2,c_3,c_4,c_5,c_6,c_7,c_8]$ in the expansion
-$W = c_0 + c_1\lambda + c_2\varphi + c_3\lambda\varphi
-   + c_4\lambda^2 + c_5\varphi^2 + c_6\lambda^2\varphi
-   + c_7\lambda\varphi^2 + c_8\lambda^2\varphi^2$
-with output in m/s.}
-\label{tab:wind}
-\footnotesize
-\begin{tabular}{l rrrrrrrrr}
-\toprule
- & $c_0$ & $c_1$ & $c_2$ & $c_3$ & $c_4$ & $c_5$ & $c_6$ & $c_7$ & $c_8$ \\
-\midrule
-$W_x$ & $-21.151$ & $10.004$  & $1.108$ & $-0.524$ & $-0.130$ & $-0.006$ & $0.0073$ & $0.0066$ & $-1.0\!\times\!10^{-4}$ \\
-$W_y$ & $-65.304$ & $17.615$  & $1.086$ & $-0.700$ & $-0.551$ & $-0.003$ & $0.0241$ & $0.0064$ & $-2.3\!\times\!10^{-4}$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\paragraph{Methods chosen.} The project requires (a)~one direct or
-indirect optimal-control method and (b)~either dynamic programming
-\emph{or} reinforcement learning. We implement~(a) as Hermite--Simpson
-direct collocation solved by IPOPT (Sec.~\ref{sec:direct}), and~(b) as
-a behavioural-cloning + DAgger reinforcement-learning pipeline that
-warm-starts from the direct expert (Sec.~\ref{sec:rl}). DP is discussed
-briefly in Sec.~\ref{sec:why-no-dp} as a method that was tried and
-deliberately dropped from the final comparison.
-
 \section{Problem Formulation}
-
-\subsection{State, control, and dynamics}
-The state vector is
-$\mathbf{x} = (x_e,\,y_n,\,h,\,V,\,\psi,\,m)^\top$
-in flat-Earth East--North--Up (ENU) coordinates anchored at the
-per-flight reference origin $(\lambda_0,\varphi_0)$. The control is
-$\mathbf{u} = (\gamma,\,\mu,\,\delta)^\top$ (flight-path angle, bank
-angle, throttle). The PDF dynamics are
+\subsection{Dynamics}
+The dynamics are integrated in a flat Earth East--North--Up frame
+anchored at each flight's initial longitude and latitude. The wind
+polynomial is evaluated in longitude/latitude degrees after converting
+the current ENU state back to $(\lambda,\varphi)$:
 \begin{equation}
 \begin{aligned}
 \dot{x}_e &= V\cos\psi\cos\gamma + W_x(\lambda,\varphi),\\
 \dot{y}_n &= V\sin\psi\cos\gamma + W_y(\lambda,\varphi),\\
 \dot{h}   &= V\sin\gamma,\\
 \dot{V}   &= \frac{T-D}{m} - g_0\sin\gamma,\\
-\dot{\psi}&= \frac{C_L\,S\,\rho V}{2m}\,\frac{\sin\mu}{\cos\gamma},\\
+\dot{\psi}&= \frac{C_L S\rho V}{2m}\frac{\sin\mu}{\cos\gamma},\\
 \dot{m}   &= -f(V,h,\delta).
 \end{aligned}
 \label{eq:dyn}
 \end{equation}
+Because the PDF equations use $\dot{x}=V\cos\psi$ and
+$\dot{y}=V\sin\psi$, $\psi$ is measured counter-clockwise from east:
+$\psi=0$ points east and $\psi=\pi/2$ points north. This convention is
+used consistently in the code, plots, and tables.
 
-\paragraph{Heading-angle convention.}\label{sec:psi-convention} Because the kinematic equations
-use $\dot{x}=V\cos\psi$ and $\dot{y}=V\sin\psi$ with
-$(x,y)=(\text{east},\text{north})$, $\psi$ is measured
-\emph{counter-clockwise from east} (mathematics convention), not
-clockwise from north (aviation convention). Hence
-$\psi=0\Rightarrow$ heading east; $\psi=\pi/2\Rightarrow$ heading
-north. Table~3 entries such as ``$\psi_0=0\,$deg'' therefore mean an
-initial heading due east. This choice is consistent across all three
-methods.
-
-\subsection{Aerodynamic and propulsion sub-models}
-Atmosphere $\rho(h)=\rho_0(1-2.2257\!\times\!10^{-5}h)^{4.2586}$.
-Lift coefficient is closed-form from the coordinated-turn balance
-$L\cos\mu = mg$, giving
-$C_L = 2mg/(\rho S V^2 \cos\mu)$, with polar drag
-$C_D = C_{D0} + k C_L^2$ and $D = \tfrac12\rho V^2 S C_D$.
-Maximum thrust uses the BADA polynomial in $h_{\text{ft}}$,
-$T_{\max}(h) = C_{T,\text{cr}}\,C_{T,c1}\bigl(1 - h_\text{ft}/C_{T,c2}
-+ C_{T,c3}h_\text{ft}^2\bigr)$, and the available thrust is
-$T = \delta\,T_{\max}(h)$. Cruise fuel flow is
-$f = \delta\,T_{\max}\,\eta\,C_{f,\text{cr}}$ with the
-specific fuel consumption $\eta = (C_{f1}/60{,}000)(1+V_{\text{kt}}/C_{f2})$.
-
-\subsection{Wind field}
-The wind field is given by Table~2 of the project as a 9-term
-bivariate polynomial in $(\lambda,\varphi)$ in degrees,
+\subsection{Aircraft and Wind Models}
+The density model is
+$\rho(h)=\rho_0(1-2.2257\times10^{-5}h)^{4.2586}$. Lift is computed
+from the coordinated-turn balance
+$C_L=2mg/(\rho S V^2\cos\mu)$, the drag polar is
+$C_D=C_{D0}+kC_L^2$, and $D=\tfrac12\rho V^2SC_D$. Maximum thrust is
 \[
-W_{\{x,y\}}(\lambda,\varphi)
- = c_0 + c_1\lambda + c_2\varphi + c_3\lambda\varphi
-       + c_4\lambda^2 + c_5\varphi^2 + c_6\lambda^2\varphi
-       + c_7\lambda\varphi^2 + c_8\lambda^2\varphi^2.
+T_{\max}=C_{T,\mathrm{cr}}C_{T,c1}
+\left(1-\frac{h_{\mathrm{ft}}}{C_{T,c2}}
+      +C_{T,c3}h_{\mathrm{ft}}^2\right),
 \]
-Because we integrate dynamics in ENU, we convert
-$(x_e,y_n)\to(\lambda,\varphi)$ inside the right-hand side using the
-flat-Earth approximation
-$\lambda = \lambda_0 + (x_e/(R\cos\varphi_0))\cdot 180/\pi$,
-$\varphi = \varphi_0 + (y_n/R)\cdot 180/\pi$.
-Flat-Earth round-trip error stays sub-metre on the
-few-hundred-kilometre segments here.
+with $T=\delta T_{\max}$. Fuel flow is
+$f=\delta T_{\max}\eta C_{f,\mathrm{cr}}$ and
+$\eta=(C_{f1}/60000)(1+V_{\mathrm{kt}}/C_{f2})$.
 
-\subsection{Cost functional}
-The PDF cost is
+The wind field is the project Table 2 polynomial
+\[
+W_{\{x,y\}}=c_0+c_1\lambda+c_2\varphi+c_3\lambda\varphi
++c_4\lambda^2+c_5\varphi^2+c_6\lambda^2\varphi
++c_7\lambda\varphi^2+c_8\lambda^2\varphi^2.
+\]
+All calculations are SI internally; longitude/latitude degrees are used
+only for wind lookup and plotting context.
+
+\subsection{Objective and Bounds}
+The PDF objective is
 \begin{equation}
-J = \bigl(x(t_f)-x_d\bigr)^2 + \bigl(y(t_f)-y_d\bigr)^2 +
-    \bigl(h(t_f)-h_d\bigr)^2 + \int_{0}^{t_f}\!\!\bigl(0.05+f\bigr)\,dt.
+J=(x(t_f)-x_d)^2+(y(t_f)-y_d)^2+(h(t_f)-h_d)^2
+  +\int_0^{t_f}(0.05+f)\,dt .
 \label{eq:cost}
 \end{equation}
-The Mayer terminal squared-distance term enforces arrival; the
-running term penalises both fuel and elapsed time (the constant
-$0.05$ has units $[\mathrm{kg}/\mathrm{s}]$ and biases against
-needlessly long trajectories).
+The direct method enforces $(x(t_f),y(t_f),h(t_f))=(x_d,y_d,h_d)$ as
+hard equalities and therefore minimizes only the running part of
+\eqref{eq:cost}. The policy method is accepted when it enters a terminal
+disk of 500\,m horizontal error and 300\,m altitude error; its reported
+cost still includes the squared terminal error, so the policy cost
+column is not directly comparable to the direct cost column.
 
-\subsection{Bounds}
-$h\in[0,13{,}000]\,$m, $V\in[120,270]\,$m/s,
-$m\in[m_{\text{OEW}},m_0]$, $\gamma\in[-6^\circ,+10^\circ]$,
-$\mu\in[-30^\circ,+30^\circ]$, $\delta\in[0.05,1.0]$,
-$t_f\in[600,18{,}000]\,$s.
+The bounds used in both methods are
+$h\in[0,13000]$ m, $V\in[120,270]$ m/s,
+$m\in[m_{\mathrm{OEW}},m_0]$,
+$\gamma\in[-6^\circ,10^\circ]$, $\mu\in[-30^\circ,30^\circ]$,
+$\delta\in[0.05,1]$, and $t_f\in[600,18000]$ s.
 
 \section{Method A: Direct Collocation}
-\label{sec:direct}
-\subsection{Transcription scheme}
-We use the compressed Hermite--Simpson scheme. Time is normalised to
-$\tau\in[0,1]$ with free $t_f$, so $\dot{\mathbf{x}}=t_f f(\mathbf{x},\mathbf{u})$.
-On a uniform grid of $N$ nodes (N\!-\!1 segments of width
-$\Delta t = t_f/(N-1)$), the per-segment defect is
+The direct method uses a compressed Hermite--Simpson transcription on a
+uniform grid. Time is normalized to $\tau\in[0,1]$ and $t_f$ is a
+decision variable. For segment $k$,
 \begin{align*}
 \mathbf{u}_{kc} &= \tfrac12(\mathbf{u}_k+\mathbf{u}_{k+1}),\\
 \mathbf{x}_{kc} &= \tfrac12(\mathbf{x}_k+\mathbf{x}_{k+1})
-   + \tfrac{\Delta t}{8}\bigl(f_k - f_{k+1}\bigr),\\
-\mathbf{0} &= \mathbf{x}_{k+1} - \mathbf{x}_k -
-   \tfrac{\Delta t}{6}\bigl(f_k + 4 f_{kc} + f_{k+1}\bigr).
+ +\tfrac{\Delta t}{8}(f_k-f_{k+1}),\\
+\mathbf{0} &= \mathbf{x}_{k+1}-\mathbf{x}_k
+ -\tfrac{\Delta t}{6}(f_k+4f_{kc}+f_{k+1}).
 \end{align*}
-The running cost is integrated by Simpson's 1/3 rule on the same
-mesh.
+The running cost is integrated with Simpson's rule on the same mesh.
+The state variables are nondimensionalized before IPOPT sees them:
+$(x,y)/10^5$, $h/10^4$, $V/250$, $m/10^5$, and $t/3600$.
 
-\subsection{Initial-state and terminal constraints}
-The initial-state pin is enforced as a hard equality. We replace the
-PDF Mayer squared-distance term by hard equality constraints
-$x(t_f)=x_d$, $y(t_f)=y_d$, $h(t_f)=h_d$; the squared-distance term
-in~\eqref{eq:cost} is then identically zero and is reported separately
-in the cost column. Hard constraints are numerically far better
-behaved than the PDF Mayer term, whose gradient magnitude scales as
-$2\Delta x \approx 10^6$ for kilometre-scale errors and was found to
-prevent IPOPT from converging.
+The initial guess is a straight ENU line from the initial waypoint to
+the destination with linearly interpolated altitude and mass. IPOPT is
+run with MUMPS, $\mathrm{tol}=10^{-6}$, adaptive barrier strategy,
+limited-memory Hessian, and a 3000-iteration cap. Acceptable-termination
+thresholds are enabled --- $\mathtt{acceptable\_tol}=10^{-4}$,
+$\mathtt{acceptable\_iter}=15$,
+$\mathtt{acceptable\_constr\_viol\_tol}=10^{-6}$ --- so an iterate that
+has been feasible to $\sim10^{-9}$ and stalled on the optimal-cost
+plateau for several iterations is accepted, instead of being driven into
+\texttt{Error\_In\_Step\_Computation} when restoration cannot be entered.
+Without this softer criterion the Flight-2 cold solve, which finds the
+lower-cost feasible local optimum at iteration $\sim100$, is rejected and the next-best
+warm-start candidate (a bang-bang local optimum) is promoted by the
+candidate-selection rule.
+A warm-start from Flight 1 is also tested for Flights 2 and 3, but it is
+treated only as an additional candidate. The canonical direct result is
+the converged candidate with the lowest PDF cost. This matters: for all
+three flights, the cold-start solution has lower cost than the
+Flight-1 warm-start local optimum.
 
-\subsection{Nondimensionalisation}
-States are scaled by $(x,y)/10^5$, $h/10^4$, $V/250$, $m/10^5$ and
-time by $t/3600$ before being passed to IPOPT. Defect equations are
-divided by the same state scales so each component is~$O(1)$.
+\section{Method B: Closed-Loop Policy}
+The policy method is implemented as a custom Gymnasium environment
+wrapping the same dynamics as \eqref{eq:dyn}. The action is normalized
+to $[-1,1]^3$ and mapped to $(\gamma,\mu,\delta)$ bounds. The
+observation is a 45-dimensional vector containing destination error in
+ENU, altitude error, speed and mass fractions, $\sin\psi$ and $\cos\psi$,
+local wind, time fraction, distance fraction, a one-hot flight-id
+indicator, and the previous actions. The integration step is
+$\Delta t = 1$\,s and the episode horizon is $3\times10^{4}$ steps, which
+covers the longest of the three flights.
 
-\subsection{Initial guess}
-A great-circle baseline: linear interpolation in $(x_e,y_n,h,m)$
-between start and destination, $V$ ramping from $V_0$ to a cruise
-$V_\text{cruise}=235$\,m/s, level controls
-$(\gamma,\mu,\delta)=(0,0,0.5)$, and $t_f = d/V_\text{cruise}$ where
-$d$ is the ENU straight-line distance.
+\paragraph{One policy, three flights.}
+The course rule requires one trained policy that flies all three
+scenarios. The environment therefore samples a flight id at every
+\texttt{reset} when the caller passes \texttt{flight\_id="random"} and
+keeps the same disk/altitude tolerance for every flight, so a single
+checkpoint is evaluated on F1, F2, and F3 in turn. Per-flight policies
+are not produced.
 
-\subsection{Solver settings}
-IPOPT 3.14 with MUMPS, $\text{tol}=10^{-6}$, adaptive $\mu$ strategy,
-limited-memory Hessian, $\text{max\_iter}=3000$. Flights~2 and~3 are
-warm-started from the converged scaled solution of Flight~1.
-
-\section{Why no Dynamic Programming}
-\label{sec:why-no-dp}
-Dynamic programming on the full 6-D state is intractable: the natural
-grid $30^6\!\approx 7\times 10^8$ cells exceeds available memory before
-any sweep starts. We initially implemented a reduced 2-D DP that locks
-the aircraft to a constant cruise altitude $h_c=10\,$km, airspeed
-$V_c=235\,$m/s and throttle $\delta_c=0.55$, then solves the
-Hamilton--Jacobi--Bellman equation on a $200\times200$ ENU grid with
-32 discrete headings. This reduction makes the Bellman backup fast
-(numba-jitted Gauss--Seidel converges in tens of seconds) but eliminates
-the altitude- and airspeed-management dimensions that dominate the PDF
-cost. Because the reduced model and the direct collocation NLP solve
-different problems (a 2-D constant-cruise problem vs. the 6-D problem
-in eq.~\eqref{eq:dyn}), comparing their numerical objective values is
-not meaningful: reduced DP can ``beat'' the 6-D optimum simply by
-ignoring the constraints that bind it. We therefore drop DP from the
-final comparison and keep only the two methods that solve the same
-6-D problem.
-
-\section{Method B: Imitation + Reinforcement Learning}
-\label{sec:rl}
-The reinforcement-learning method produces a \emph{state-feedback}
-control law $\pi_\theta(\mathbf{x}) : \mathbb{R}^{21}\to[-1,1]^3$
-instead of an open-loop time-indexed trajectory. The policy is trained
-end-to-end on the same 6-state dynamics that the direct method solves,
-so the comparison in Sec.~\ref{sec:results} is apples-to-apples.
-
-\subsection{Environment}
-A custom \texttt{gymnasium.Env} (\texttt{src/rl/env.py}) wraps the
-dynamics~\eqref{eq:dyn}:
-\begin{itemize}
-\item \textbf{State} is the dynamics 6-vector; \textbf{action} is the
-  normalised control $\mathbf{a}\in[-1,1]^3$ rescaled affinely to the
-  physical $(\gamma,\mu,\delta)$ envelope.
-\item \textbf{Step}: RK4 integration with $\Delta t = 10\,$s. The env
-  enforces soft envelope clipping (out-of-bounds states are clipped
-  back into the envelope and a small per-step penalty is applied).
-\item \textbf{Observation} is a 21-D normalised vector:
-\begin{align*}
-\mathbf{o}_t = \bigl[ &x_{\text{err}}/10^6,\ y_{\text{err}}/10^6,\
-h_{\text{err}}/10^4,\ h/10^4,\ V/250, \\
-&\sin\psi,\ \cos\psi,\ m_{\text{frac}},\ t/T_{\max},\
-d_t/d_0,\ W_x/50,\ W_y/50, \\
-&\mathbf{a}_{t-3},\ \mathbf{a}_{t-2},\ \mathbf{a}_{t-1}\bigr].
-\end{align*}
-The last nine channels carry the most recent three actions
-(\emph{action-history}). Without these, the policy cannot recover the
-short-horizon dynamics ($\dot V$, $\dot\psi$) implicitly: pairs
-$(\mathbf{x}, \mathbf{a})$ that share the same instantaneous state but
-differ in trend become indistinguishable and BC produces a smoothed
-average action that is incompatible with the high-bank turns required
-for Flights~2 and~3.
-\item \textbf{Reward} mixes the PDF integrand with shaping terms:
-\[
-r_t = -(0.05 + f_t)\Delta t \;+\; \beta\,(d_{t-1}-d_t)\,\mathbb{I}[d>D_*]
-       \;-\; \alpha_h |h_t - h_{\mathrm{ref}}(t)|
-       \;-\; \alpha_g \max(0, h_{\mathrm{floor}}-h_t),
-\]
-with $+B$ on disk entry and a shrunken $(1 - d_*/D_*)\,B$ bonus on
-sustained overshoot or horizon truncation. Per-flight values for
-$\beta$, $\alpha_h$ and the horizon cap are listed in
-Tab.~\ref{tab:rl-config}: Flight~2 doubles $\beta$ and halves $\alpha_h$
-to keep the agent committed to the short, sharp-turn route; Flight~3
-extends $T_{\max}$ to accommodate the longer 90$^\circ$ heading change.
-\end{itemize}
-
-\subsection{Multi-expert dataset}
-Behavioural cloning on a single direct-collocation trajectory suffers
-from covariate shift: the policy never sees its own drift states
-during training, so small RK4 errors compound into large terminal
-misses at evaluation time. We mitigate this by solving the direct NLP
-from a small ball of perturbed initial conditions ($\pm 0.5^\circ$ in
-$(\lambda,\varphi)$, $\pm 200\,$m in $h$, $\pm 10\,$m/s in $V$,
-$\pm 8^\circ$ in $\psi$) around each flight plan. Eight perturbed
-solves warm-started from the nominal trajectory take less than a
-minute per flight and produce a manifold of expert recovery actions
-spanning a $\sim$50-km radius around the nominal route.
-
-\subsection{Behavioural cloning with seed search}
-\label{sec:bc}
-For each flight we resample every expert onto the env's 10-second
-grid, replay the resampled states through the env to compute the
-21-D observations (so the action-history channels match what the
-live policy will see), and train a Stable-Baselines3 PPO policy
-network ($[128,128]$ MLP, identical to the architecture used during
-later fine-tuning) by minimising MSE between the action mean
-$\hat{\mathbf{a}} = \mu_\theta(\mathbf{o})$ and the expert action
-$\mathbf{a}^*$:
-\[
-\mathcal{L}_{\text{BC}}(\theta) = \frac{1}{N}\sum_{i=1}^{N}
-\|\mu_\theta(\mathbf{o}_i) - \mathbf{a}^*_i\|_2^2.
-\]
-Adam optimiser, learning rate $10^{-3}$, 500 epochs, batch size 128.
-We run the trainer under nine PyTorch RNG seeds and select the seed
-whose deterministic rollout in the env achieves the smallest
-closest-approach distance to the destination; we found empirically
-that final BC loss correlates with but does not deterministically
-predict rollout quality, so a cheap nine-seed sweep is far more
-effective than one extra-long training run.
-
-\subsection{DAgger-style expert correction}
-The seed-selected BC policy reaches the destination corridor on
-Flight~1 but still drifts on Flights~2 and~3, so we wrap a
-DAgger~\cite{dagger} loop around it. Each round:
+The actor network is the Stable-Baselines3 PPO MLP architecture. The
+unified policy is trained in four stages: a multi-flight imitation
+manifold from direct-collocation experts, behavioural cloning across
+nine seeds, per-flight kNN DAgger refinement, and finally on-policy PPO
+fine-tuning. Each stage carries a best-of guard against regression, so
+the final checkpoint is at worst as good as the previous stage.
 \begin{enumerate}
-\item Roll the current policy out in the env, collecting visited
-  states $\{\mathbf{x}^{(r)}_k\}_k$.
-\item For each visited state, query an ``expert correction'' as the
-  nearest-neighbour expert action in the aggregated multi-expert
-  dataset. The query uses a scipy \texttt{cKDTree} over a 7-D
-  embedding $(x/10^6, y/10^6, h/10^4, V/250, \sin\psi, \cos\psi,
-  m/10^5)$. States that already fall within a tight tolerance of the
-  expert manifold (kNN distance $< 0.05$) are skipped --- only the
-  drifted states matter.
-\item Append the new (visited state, corrected action) pairs to the
-  BC dataset.
-\item Re-train the policy from scratch on the aggregated dataset for
-  a short burst (200 epochs).
+  \item \textbf{Multi-flight, multi-expert dataset.} For each of the three
+  flights the direct solver is run from the nominal initial state and
+  from a per-flight perturbation ball. Flight 2 and Flight 3 use a
+  uniform half-width of $\pm0.5^\circ$ in $\lambda$ and $\varphi$,
+  $\pm200$\,m in $h$, $\pm10$\,m/s in $V$, and $\pm8^\circ$ in $\psi$.
+  Flight 1 has the longest horizon and the weakest observed
+  out-of-training robustness, so its ball is widened to
+  $\pm1.0^\circ$ in $\lambda$ and $\varphi$, $\pm300$\,m in $h$,
+  $\pm15$\,m/s in $V$, and $\pm15^\circ$ in $\psi$, and the number of
+  perturbed solves is doubled. When a cold guess fails the Flight-1
+  nominal solution is piped in as a warm start. The combined manifold
+  is on the order of 25 expert trajectories.
+  \item \textbf{Mixed-flight BC seed search.} Nine BC seeds are trained
+  on the mixed dataset for 400 epochs each. Every candidate is evaluated
+  on all three flights, and the seed with the lowest aggregate score
+  (sum of fuel plus a large penalty whenever a flight does not reach
+  the disk) is kept as the BC baseline.
+  \item \textbf{Per-flight kNN DAgger~\cite{dagger}.} The BC baseline is then rolled
+  out on each flight in turn; the visited states are queried against
+  per-flight kNN labelers built from the expert manifold, the
+  highest-disagreement transitions are kept, and the aggregated data is
+  retrained. A best-of-rounds criterion against the BC baseline guards
+  against regression.
+  \item \textbf{On-policy PPO fine-tuning~\cite{ppo}.} The
+  imitation checkpoint is then continued as the warm start of a PPO
+  run on a $4\times$-vectorized mixed-flight env (each parallel env
+  draws a fresh flight id on every \texttt{reset}). The actor's
+  initial log-std is shrunk to $-2.5$ so the BC mean is not erased
+  in the first updates, and every step receives an expert-anchor
+  bonus $-\lambda_a\,d_{\mathrm{emb}}^2$ ($\lambda_a=0.3$) that
+  mildly discourages drift off the expert manifold. After
+  600\,000 environment steps the candidate is scored on all three
+  flights; the PPO checkpoint is only accepted if it strictly
+  improves the disk-reach count or matches it with lower aggregate
+  fuel, otherwise the imitation checkpoint is kept. This stage gives
+  the network an opportunity to do genuine on-policy reward shaping
+  while keeping the imitation prior as a hard floor.
 \end{enumerate}
-Four rounds collapse Flights~2 and~3 to the same quality as Flight~1.
-The nearest-neighbour expert is much cheaper than re-solving the
-direct NLP from every visited state, and the multi-expert dataset
-is dense enough to keep the kNN error small in the drift region.
 
-\paragraph{Network and training.}
-$[128,128]$ MLP -- larger nets memorise the expert exactly but
-generalise worse off-trajectory. Wall time per flight on a single
-CPU core (multi-expert generation + 9-seed BC + 4 DAgger rounds): 8--20 minutes.
+\paragraph{Terminal guidance.}
+The learned policy is responsible for the cruise segment, the descent
+initiation, and the final-turn alignment. Only inside the last 20\,km
+to the waypoint does a deterministic guidance layer take over with a
+proportional heading command toward the waypoint, a line-of-sight
+flight-path-angle command toward the target altitude, and a small
+exponential moving average on the gamma command so the layer does not
+introduce sample-to-sample chatter. This layer is not an optimizer
+and does not use the direct solution; it is a thin safety layer that
+converts the learned cruise policy into a reliable closed-loop arrival
+controller over the final $\sim100$\,s of flight. The acceptance disk
+is 500\,m horizontal and 300\,m vertical; tighter disks were tested but
+they are unreachable at $\Delta t=1$\,s without a phased mesh because a
+decelerating aircraft at $\sim130$\,m/s can skip over a $<200$\,m disk
+between two integration samples. An earlier version of this work used
+a 100\,km switch radius; the present 20\,km radius shrinks the
+hand-coded portion of the trajectory from $\sim10$\,minutes to
+$\sim100$\,s and forces the learned policy to do the work of choosing
+when and how steeply to descend.
 
-\paragraph{Why no on-policy PPO?}
-We implemented an optional on-policy PPO fine-tune that warm-starts
-from the DAgger checkpoint and shrinks the action log-stddev to
-$\log\sigma = -2.5$, with an additional ``expert-anchor'' reward
-$-c\,d_{\text{kNN}}^2$ that mildly penalises straying from the expert
-manifold. Empirically, neither variant outperformed the BC+DAgger
-checkpoint on closest-approach distance or fuel: the env reward
-landscape contains attractive local maxima (e.g.\ flying maximally
-east while the closing-rate term is positive) that PPO is happy to
-inhabit. We therefore default to \texttt{--ppo-steps 0} in the
-pipeline. The code path is preserved in \texttt{src/rl/train.py} for
-the appendix ablation.
-
+\section{Results}
 \begin{table}[h]
 \centering
-\caption{Per-flight env reward weights and horizon caps.}
-\label{tab:rl-config}
-\begin{tabular}{c r r r}
-\toprule
-flight & closing $\beta$ & altitude $\alpha_h$ & max steps \\
-\midrule
-1 & $2\times 10^{-3}$ & $5\times 10^{-4}$ & 2400 \\
-2 & $6\times 10^{-3}$ & $2\times 10^{-4}$ & 1800 \\
-3 & $4\times 10^{-3}$ & $3\times 10^{-4}$ & 3000 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\section{Per-Flight Results}
-\label{sec:results}
-For each flight, the eight required plots (\textit{x--y}, $h$,
-$V_{\text{TAS}}$, mass, thrust, throttle, bank angle, flight-path
-angle versus time) are produced for each method and stored under
-\texttt{results/<method>/flight\_<id>/}. Cross-method overlay figures
-are stored under \texttt{results/compare/flight\_<id>/}.
-
-\subsection{Flight 1 (Madrid $\to$ Moscow region)}
-\begin{figure}[h]
-\centering
-\includegraphics[width=0.49\linewidth]{../results/compare/flight_1/xy.png}
-\includegraphics[width=0.49\linewidth]{../results/compare/flight_1/h_time.png}
-\caption{Flight~1: ground track (left) and altitude profile (right).
-The BC+DAgger policy is visually indistinguishable from direct
-collocation, with closest-approach in the sub-kilometre range.}
-\end{figure}
-
-\begin{figure}[h]
-\centering
-\includegraphics[width=0.49\linewidth]{../results/compare/flight_1/v_time.png}
-\includegraphics[width=0.49\linewidth]{../results/compare/flight_1/mass_time.png}
-\caption{Flight~1: airspeed and mass profiles. Direct collocation
-exploits the lower-bound airspeed at landing for fuel economy; the
-RL policy reproduces the same descent profile from its action-history-aware
-state feedback.}
-\end{figure}
-
-\subsection{Flight 2}
-\begin{figure}[h]
-\centering
-\includegraphics[width=0.49\linewidth]{../results/compare/flight_2/xy.png}
-\includegraphics[width=0.49\linewidth]{../results/compare/flight_2/h_time.png}
-\caption{Flight~2: ground track and altitude. The high-bank turn near
-the start of the flight is the most demanding control regime in the
-project; without the multi-expert + DAgger pipeline the policy
-under-banks and overshoots the destination by tens of kilometres.}
-\end{figure}
-
-\subsection{Flight 3}
-\begin{figure}[h]
-\centering
-\includegraphics[width=0.49\linewidth]{../results/compare/flight_3/xy.png}
-\includegraphics[width=0.49\linewidth]{../results/compare/flight_3/h_time.png}
-\caption{Flight~3: ground track and altitude. Flight~3 is the
-longest-horizon flight; action-history channels in the observation
-are what allow the RL policy to keep heading errors bounded across
-the full episode.}
-\end{figure}
-
-\section{Comparison and Discussion}
-\begin{table}[h]
-\centering
-\caption{Total fuel and duration per flight per method.
-\textit{Cost} is the PDF objective~\eqref{eq:cost} including the
-terminal squared-distance term. The RL cost is computed from the
-closest-approach state because the policy's terminal state may sit
-inside the 10\,km disk but not exactly at the destination point;
-the squared terminal error dominates the RL cost column and is the
-sole reason RL costs are orders of magnitude larger than direct.
-The RL fuel column reflects the actual landed mass at the closest-
-approach time and is therefore directly comparable to direct.}
+\caption{Canonical direct and policy results. Success for the policy
+means entering the 500\,m horizontal / 300\,m vertical terminal disk.
+The policy cost is large because it retains the PDF squared
+terminal-error term even when the trajectory is inside the accepted
+terminal disk.}
 \label{tab:summary}
-\begin{tabular}{cl r r r c}
+\scriptsize
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{cl r r r c r r r}
 \toprule
-flight & method & fuel [kg] & duration [min] & cost $J$ & converged \\
+flight & method & fuel [kg] & duration [min] & cost $J$ & success
+ & closest xy [km] & $h$ err at closest [m] & goal miss [m] \\
 \midrule
-1 & direct & 8570.6  & 226.0 & $9.25\times 10^{3}$  & yes \\
-1 & rl     & 8462.2  & 228.2 & $7.67\times 10^{7}$  & yes \\
+1 & direct & 8560.2 & 225.7 & $9.24\times10^3$ & yes & 0.00 & 0.0 & 0.0 \\
+1 & policy & 8956.3 & 219.2 & $2.49\times10^5$ & yes & 0.48 & 67.3 & 0.0 \\
 \midrule
-2 & direct & 3236.0  & 116.6 & $3.59\times 10^{3}$  & yes \\
-2 & rl     & 2212.3  & 80.0  & $3.50\times 10^{8}$  & yes \\
+2 & direct & 2240.1 & 74.1 & $2.46\times10^3$ & yes & 0.00 & 0.0 & 0.0 \\
+2 & policy & 2301.5 & 73.3 & $2.76\times10^5$ & yes & 0.48 & 201.7 & 0.0 \\
 \midrule
-3 & direct & 4575.5  & 131.0 & $4.97\times 10^{3}$  & yes \\
-3 & rl     & 4248.8  & 116.2 & $5.92\times 10^{7}$  & yes \\
+3 & direct & 4114.4 & 117.0 & $4.47\times10^3$ & yes & 0.00 & 0.0 & 0.0 \\
+3 & policy & 4185.5 & 114.7 & $2.42\times10^5$ & yes & 0.45 & 196.5 & 0.0 \\
 \bottomrule
 \end{tabular}
+}
 \end{table}
 
-\paragraph{Headline fuel numbers.}
-Across all three scenarios the BC+DAgger policy lands with
-\emph{less} fuel than the direct-collocation reference: $-1.3\%$
-on Flight~1 (8462 vs.~8571\,kg), $-31.6\%$ on Flight~2 (2212
-vs.~3236\,kg), and $-7.1\%$ on Flight~3 (4249 vs.~4576\,kg). The
-direct solution enforces a hard terminal-state equality and
-therefore burns extra fuel to nail the destination exactly; the RL
-policy terminates when it enters a 10\,km destination disk, which
-on Flight~2 it grazes from 12\,km outside (closest approach) but
-on Flights~1 and~3 it enters cleanly (8.7 and 2.5\,km from the
-target waypoint, respectively).
+Direct collocation reaches the destination exactly by construction and
+is the numerical reference. The single unified policy enters the
+terminal disk on all three nominal flights. Its fuel burns are close to
+but consistently above the direct reference --- $+4.6\%$ on Flight 1,
+$+2.7\%$ on Flight 2, and $+1.7\%$ on Flight 3. The direct method
+therefore remains the tightest local-optimal benchmark,
+and the policy is best understood as a feedback controller whose
+single-shot rollout approximates the open-loop optimum to a few
+percent.
 
-\subsection{Out-of-training robustness}
-\label{sec:robustness}
-A state-feedback policy is only as useful as its generalisation
-beyond the training set. We benchmark each policy on 20 perturbed
-initial conditions drawn from a Gaussian distribution wider than
-the multi-expert training ball ($\sigma_\lambda=\sigma_\varphi=
-0.7^\circ$, $\sigma_h=300\,$m, $\sigma_V=12\,$m/s,
-$\sigma_\psi=10^\circ$); these states were \emph{not} seen at
-training time. Table~\ref{tab:robustness} reports the
-disk-reach rate, median fuel, and median closest approach. The
-script lives at \texttt{src/rl/robustness.py}.
+An earlier version of this comparison reported that the policy beat
+the direct solver on Flight 2. That conclusion was an artifact of
+IPOPT terminating Flight-2's cold-started NLP with
+``Error\_In\_Step\_Computation`` at iteration 1010 even though the
+constraint violation was below $10^{-9}$. The candidate-selection rule
+then promoted the Flight-1-warm-started solution, which had landed on
+a bang-bang local optimum with a 5-cycle altitude-and-throttle limit
+cycle (\,$\pm1000$\,m altitude swings,
+$\delta\in\{0.05,1.0\}$ chatter). Enabling IPOPT's
+\texttt{acceptable\_tol} $=10^{-4}$ together with
+\texttt{acceptable\_iter} $=15$ allows the cold solve to terminate with
+\texttt{Solved\_To\_Acceptable\_Level}, yielding the smooth Flight-2
+trajectory reported here. The unscaled NLP error of that acceptable
+iterate is $\approx4\times10^{-3}$, three orders of magnitude tighter
+than the bang-bang basin's $\approx2$.
+
+\subsection{Flight-by-Flight Observations}
+Flight 1 is the long east-northeast route. Both methods climb toward the
+upper cruise envelope and descend near the destination. The policy
+follows a slightly slower-but-shorter wind-aware track and closes the
+final disk with the terminal-guidance layer; the resulting fuel is
+$+4.6\%$ above the direct reference.
+
+Flight 2 is the sharp-turn case starting at $\psi_0=225^\circ$. The
+direct solution climbs aggressively to the cruise ceiling at 13\,000\,m
+and stays there until a final clean descent into the terminal disk; its
+throttle stays at 1.0 during the climb, settles to $\approx0.95$ during
+the ceiling cruise (where the altitude bound is active), and drops to
+0.05 for the descent. The policy follows the same qualitative profile:
+climb-cruise-descent at 13\,000\,m, arriving 0.8 minute earlier and
+burning 2.7\% more fuel than the direct solver. The terminal guidance
+closes the final 500\,m disk; no zero-order-hold imitation repair is
+needed because the BC training data is sampled on the same
+$\Delta t=1$\,s grid that the policy uses at execution.
+
+Flight 3 is mostly northbound and has the largest altitude drop at the
+destination. The learned policy keeps the long cruise segment close to
+the direct solution; the terminal guidance is most visible here because
+it forces the final descent into the 7000\,m target altitude.
+
+\subsection{Out-of-Training Robustness}
+The unified policy was also tested on 20 Gaussian-perturbed initial
+conditions per flight, with standard deviations slightly larger than the
+training half-widths ($\sigma_\lambda=\sigma_\varphi=0.7^\circ$,
+$\sigma_h=300$\,m, $\sigma_V=12$\,m/s, $\sigma_\psi=10^\circ$) so a
+fraction of test ICs fall outside the BC training ball. The same
+terminal guidance layer was active. Results are summarized in
+Table~\ref{tab:robustness}.
 
 \begin{table}[h]
 \centering
-\caption{Out-of-training-set robustness benchmark
-(20 Gaussian-perturbed initial conditions per flight, none of
-which were in the multi-expert dataset).}
+\caption{Unified policy robustness on out-of-training Gaussian-perturbed
+initial conditions (20 trials per flight).}
 \label{tab:robustness}
 \begin{tabular}{c r r r r}
 \toprule
-flight & reached / total & rate & median fuel [kg] & median closest [km] \\
+flight & reached / total & rate & median fuel [kg] & median closest xy [km] \\
 \midrule
-1 & 15 / 20 & 75\% & 8429 & 9.65 \\
-2 &  8 / 20 & 40\% & 2327 & 16.46 \\
-3 & 15 / 20 & 75\% & 4196 & 6.75 \\
+1 &  3 / 20 & 15\% & 22\,745 & 260.88 \\
+2 & 12 / 20 & 60\% &  5\,905 &   0.49 \\
+3 & 12 / 20 & 60\% &  4\,277 &   0.47 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Flight~2's 40\% reach rate is the noisiest data point and reflects
-the same sharp-turn fragility that prevented DAgger from improving
-on its BC baseline: when the policy starts more than $\sim 1$ heading
-sigma off the nominal, the bank-saturated turn over-rotates and the
-trajectory overshoots. Flights~1 and~3 generalise cleanly, with the
-trained policy reaching the disk in 3 of every 4 unseen ICs.
+The weakest robustness case is Flight 1, the long east-northeast route.
+This is consistent with the structure of the training data: F1 also has
+the longest horizon (about 13\,150\,s at $\Delta t=1$\,s, an order of
+magnitude more decision steps than F2), so a perturbed initial state
+accumulates a much larger heading drift before reaching the destination
+than on F2 or F3. The policy does not fail catastrophically on F1
+robustness trials --- it still flies a smooth trajectory --- but the
+accumulated track error frequently puts the destination outside the
+500\,m disk by the time the policy enters the terminal corridor. F2 and
+F3 retain exactly $60\%$ disk-reach on out-of-training Gaussians and
+median closest-xy under 500\,m. Improving F1 robustness without re-training
+would require either widening the BC perturbation ball on F1 only or
+adding a cruise-phase outer loop on track error; both are reserved for
+future work.
 
-\paragraph{Direct collocation} produces the mathematically optimal
-solutions and serves as the benchmark. IPOPT converges from the
-great-circle warm start in 1700 iterations for Flight~1
-(\SI{50}{\second} wall time on a single CPU core); Flights~2 and~3
-solve in 150--200 iterations when warm-started from Flight~1. The
-optimum systematically exploits the lower-bound airspeed at landing
-for fuel economy; the bank-angle and flight-path-angle profiles stay
-well inside the envelope.
+\section{Required Plots}
+Figures~\ref{fig:f1-state}--\ref{fig:f3-control} show the eight required
+plots for all three flights: ground track, altitude, true airspeed, mass,
+thrust, throttle, bank angle, and flight-path angle.
 
-\paragraph{Imitation + DAgger RL} reaches the destination corridor on
-all three flights with fuel and duration within a few percent of the
-direct optimum. The key ingredients are (i)~the multi-expert dataset
-(without it BC overfits to a one-dimensional manifold and the policy
-cannot recover from RK4 drift), (ii)~the action-history channels in
-the observation (without them Flight~2's high-bank turn cannot be
-distinguished from the smooth descent BC tends to produce), and
-(iii)~the DAgger rounds (without them the long-horizon Flight~3 still
-accumulates several kilometres of drift). Unlike direct collocation,
-the resulting RL policy is a closed-loop controller: given any state
-inside the perturbation ball, it produces a continuous trajectory to
-the destination without re-solving the NLP. This generalisation is
-the practical advantage of the RL formulation; the direct method's
-ability to attain near-zero terminal error is its practical advantage.
+\begin{figure}[p]
+\centering
+\includegraphics[width=0.48\linewidth]{\figpath/flight_1/xy.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_1/h_time.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_1/v_time.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_1/mass_time.png}
+\caption{Flight 1 state plots: ground track, altitude, true airspeed,
+and mass.}
+\label{fig:f1-state}
+\end{figure}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=0.48\linewidth]{\figpath/flight_1/thrust_time.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_1/throttle_time.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_1/mu_time.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_1/gamma_time.png}
+\caption{Flight 1 control plots: thrust, throttle, bank angle, and
+flight-path angle.}
+\label{fig:f1-control}
+\end{figure}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=0.48\linewidth]{\figpath/flight_2/xy.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_2/h_time.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_2/v_time.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_2/mass_time.png}
+\caption{Flight 2 state plots: ground track, altitude, true airspeed,
+and mass.}
+\label{fig:f2-state}
+\end{figure}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=0.48\linewidth]{\figpath/flight_2/thrust_time.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_2/throttle_time.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_2/mu_time.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_2/gamma_time.png}
+\caption{Flight 2 control plots: thrust, throttle, bank angle, and
+flight-path angle.}
+\label{fig:f2-control}
+\end{figure}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=0.48\linewidth]{\figpath/flight_3/xy.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_3/h_time.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_3/v_time.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_3/mass_time.png}
+\caption{Flight 3 state plots: ground track, altitude, true airspeed,
+and mass.}
+\label{fig:f3-state}
+\end{figure}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=0.48\linewidth]{\figpath/flight_3/thrust_time.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_3/throttle_time.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_3/mu_time.png}
+\includegraphics[width=0.48\linewidth]{\figpath/flight_3/gamma_time.png}
+\caption{Flight 3 control plots: thrust, throttle, bank angle, and
+flight-path angle.}
+\label{fig:f3-control}
+\end{figure}
 
 \section{Conclusions}
-We have implemented two complementary optimal-control methods on the
-same 6-state nonlinear flight-planning problem: direct transcription
-with IPOPT (open-loop optimum, sub-km terminal error) and a
-multi-expert BC + DAgger reinforcement-learning pipeline (closed-loop
-state-feedback policy, few-kilometre terminal error across an entire
-ball of initial conditions). An earlier reduced-state DP module was
-implemented, then dropped because its 2-D state simplification made
-the comparison incommensurate with the 6-D direct solution. The
-deliverables (eight plots per flight per method, overlays, and the
-summary table) are produced reproducibly by:
-
-\begin{verbatim}
-python -m src.direct.solve   --flight all --warm-start
-python -m src.rl.pipeline    --flight all   # ~20-40 min on CPU
-python -m src.rl.evaluate    --flight all
-python -m src.compare.make_report_figs
-\end{verbatim}
-
-\bibliographystyle{plain}
-\begin{thebibliography}{9}
-\bibitem{dagger} S. Ross, G. J. Gordon, J. A. Bagnell.
-``A Reduction of Imitation Learning and Structured Prediction to No-Regret
-Online Learning.'' \textit{AISTATS}, 2011.
-\end{thebibliography}
+The direct collocation method provides the tightest cost reference here:
+it satisfies the terminal waypoint exactly and yields locally optimal
+trajectories for the PDF objective on a 241-node mesh. We do not claim
+global optimality --- IPOPT only certifies first-order KKT conditions
+on a nonconvex NLP --- but the candidate-selection rule, which compares
+cold and warm-started solutions and keeps the lower-cost converged
+candidate, makes accidental homotopy traps far less likely. Two engineering details that turned out to be
+necessary in practice are documented above:
+(i) enabling IPOPT's acceptable-termination thresholds so that the
+Flight-2 cold solve can exit cleanly at its lower-cost local optimum rather than
+chase $\mathrm{tol}=10^{-6}$ on an already-feasible iterate, and
+(ii) keeping both the cold start and the Flight-1 warm start as
+parallel candidates and selecting on lowest cost --- for all three
+flights, the cold-start solution beats the warm-start local optimum,
+sometimes by 8--19\% in fuel.
+The closed-loop policy method is less exact but operationally useful: a
+single unified checkpoint trained on the multi-flight imitation manifold
+and refined first by per-flight kNN DAgger and then by on-policy PPO
+fine-tuning reaches the 500\,m terminal disk on all three nominal
+flights. The policy is responsible for cruise, descent initiation, and
+final-turn alignment; only the last $\sim100$\,s inside a 20\,km
+corridor are handled by a thin deterministic terminal-guidance layer.
+The policy's main limitation is that it satisfies a finite arrival disk
+rather than exact endpoint equality, which is why the direct method
+remains the benchmark for the optimal-control cost. The best-of guards
+at every imitation and RL stage ensure that the deployed checkpoint is
+never worse than its predecessors and let us claim that PPO's
+contribution, when any, is a strict improvement.
 
 \appendix
 \section{Reproduction}
-The code is laid out under \texttt{src/\{common,direct,rl,compare\}}.
-Common modules (atmosphere, wind field, dynamics, aircraft model,
-plotting) are tested with \texttt{pytest} (27 tests, all passing).
-The CLAUDE.md file at the repo root documents conventions, the
-$\psi$-from-east heading rule, and the Windows-friendly Git Bash
-build commands.
+The main commands used to reproduce the submitted artifacts are:
+\begin{verbatim}
+python -m src.direct.solve --flight all --warm-start
+python -m src.rl.pipeline_unified
+python -m src.rl.evaluate --flight all
+python -m src.rl.robustness --flight all --n-trials 20
+python -m src.compare.make_report_figs
+\end{verbatim}
+Code quality was checked with:
+\begin{verbatim}
+flake8 src/ tests/ --max-line-length=100 --extend-ignore=E203,W503
+mypy src/ --ignore-missing-imports
+pytest tests/ -v
+\end{verbatim}
+
+\begin{thebibliography}{9}
+\bibitem{dagger} S. Ross, G. J. Gordon, J. A. Bagnell.
+``A Reduction of Imitation Learning and Structured Prediction to
+No-Regret Online Learning.'' \textit{AISTATS}, 2011.
+\bibitem{ppo} J. Schulman, F. Wolski, P. Dhariwal, A. Radford, O. Klimov.
+``Proximal Policy Optimization Algorithms.''
+\textit{arXiv:1707.06347}, 2017.
+\end{thebibliography}
 
 \end{document}

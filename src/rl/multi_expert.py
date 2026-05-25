@@ -52,6 +52,35 @@ class PerturbationConfig:
     d_psi_deg: float = 8.0
 
 
+# Flight-1 has the longest horizon (~13 000 s) and the worst observed
+# out-of-training robustness on a Gaussian-IC test (15\% disk reach with
+# the default uniform ball). Widening the F1 perturbation ball gives BC
+# a denser recovery manifold for long-horizon track errors, which the
+# policy needs because heading errors accumulate over time.
+F1_PERTURBATION = PerturbationConfig(
+    d_lambda_deg=1.0,
+    d_phi_deg=1.0,
+    d_h_m=300.0,
+    d_v_mps=15.0,
+    d_psi_deg=15.0,
+)
+# Flights 2 and 3 are short enough that the default 0.5 deg / 200 m /
+# 10 m/s / 8 deg ball is already sufficient.
+DEFAULT_PERTURBATION = PerturbationConfig()
+
+
+def _flight_perturbation_cfg(flight_id: int) -> PerturbationConfig:
+    """Per-flight perturbation config; F1 gets widened bounds."""
+    return F1_PERTURBATION if flight_id == 1 else DEFAULT_PERTURBATION
+
+
+def _flight_n_perturbations(flight_id: int, default_n: int) -> int:
+    """Per-flight perturbation count; F1 gets extras for the longer ball."""
+    # F1 ball is 8x larger in 5D volume than the default, so double the
+    # sample count to keep coverage roughly comparable.
+    return default_n * 2 if flight_id == 1 else default_n
+
+
 def _perturb(fp: FlightPlan, rng: np.random.Generator,
              cfg: PerturbationConfig) -> FlightPlan:
     """Return a copy of ``fp`` with a uniformly perturbed initial state."""
@@ -73,7 +102,7 @@ def generate_experts(
     flight_id: int,
     out_dir: Path,
     n_perturbations: int = 8,
-    n_nodes: int = 41,
+    n_nodes: int = 241,
     seed: int = 0,
     cfg: Optional[PerturbationConfig] = None,
     warm_start: Optional[CollocationResult] = None,
@@ -86,7 +115,7 @@ def generate_experts(
         out_dir: Directory to write the aggregated dataset and per-solve
             metadata.  Created if missing.
         n_perturbations: Number of perturbed solves on top of the nominal.
-        n_nodes: Number of collocation nodes (default 41 matches the rest
+        n_nodes: Number of collocation nodes (default 121 matches the rest
             of the pipeline).
         seed: RNG seed for the perturbation draw.
         cfg: Perturbation bounds.  Defaults to :class:`PerturbationConfig`.
@@ -110,20 +139,36 @@ def generate_experts(
     print(f"[multi-expert] flight {flight_id}: solving nominal + "
           f"{n_perturbations} perturbations ...")
 
-    # Nominal solve.
-    cr_nom = solve_direct(fp_nom, ac, wf, n_nodes=n_nodes,
-                          warm_start=warm_start)
-    if cr_nom.converged:
-        fr = to_flight_result(cr_nom, fp_nom, ac, n_nodes)
-        results.append(fr)
-        if save_plots:
-            make_eight_plots(fr, ac, out_dir / "nominal")
-    else:
-        # If the nominal solve fails we cannot perturb usefully.
+    # Nominal solve. Try the caller-supplied warm start first if any,
+    # then fall back to the great-circle cold guess if that fails (and
+    # vice versa). F2 in particular needs the F1 warm start to converge
+    # at n_nodes=121, while F1 itself needs the cold start.
+    candidates: List[tuple[str, CollocationResult]] = []
+    if warm_start is not None:
+        candidates.append((
+            "warm",
+            solve_direct(fp_nom, ac, wf, n_nodes=n_nodes,
+                         warm_start=warm_start),
+        ))
+    candidates.append((
+        "cold",
+        solve_direct(fp_nom, ac, wf, n_nodes=n_nodes, warm_start=None),
+    ))
+    converged = [c for c in candidates if c[1].converged]
+    if not converged:
+        statuses = ", ".join(f"{name}={cr.return_status}"
+                             for name, cr in candidates)
         raise RuntimeError(
             f"Nominal DC solve for flight {flight_id} did not converge "
-            f"(status={cr_nom.return_status})"
+            f"({statuses})"
         )
+    chosen_name, cr_nom = min(converged, key=lambda c: c[1].cost)
+    print(f"  [multi-expert]   nominal selected: {chosen_name} "
+          f"(cost={cr_nom.cost:.3e}, iters={cr_nom.iter_count})")
+    fr = to_flight_result(cr_nom, fp_nom, ac, n_nodes)
+    results.append(fr)
+    if save_plots:
+        make_eight_plots(fr, ac, out_dir / "nominal")
 
     # Perturbed solves -- warm-started from the nominal solution to keep
     # IPOPT iterations modest.
@@ -141,6 +186,72 @@ def generate_experts(
     print(f"[multi-expert] flight {flight_id}: kept {len(results)} "
           f"experts (1 nominal + {len(results) - 1} perturbed)")
     return results
+
+
+def generate_multi_flight_experts(
+    out_dir: Path,
+    n_perturbations: int = 6,
+    n_nodes: int = 241,
+    seed: int = 0,
+    flight_ids: tuple[int, ...] = (1, 2, 3),
+) -> List[FlightResult]:
+    """Generate the multi-flight expert dataset for unified-policy BC.
+
+    Solves nominal + ``n_perturbations`` perturbed DC NLPs for **each**
+    flight, returning a flat list. The single policy will learn from
+    this combined manifold so the same weights handle all scenarios.
+
+    Per-flight RNG is offset so different flights see independent
+    perturbations.
+
+    Args:
+        out_dir: Where to dump per-flight metadata.
+        n_perturbations: Perturbed solves per flight (default 6 keeps
+            the total dataset at 21 experts ~ tractable).
+        n_nodes: Collocation node count (>= 121 per CLAUDE.md).
+        seed: Base RNG seed; flight ``k`` uses ``seed + 100 * k``.
+        flight_ids: Iterable of flight ids; usually all three.
+
+    Returns:
+        Flat list of converged ``FlightResult`` objects across all
+        flights, in the order ``flight_ids`` were given.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    all_experts: List[FlightResult] = []
+    # F1 typically converges cleanly from the great-circle guess; F2
+    # needs F1's converged nominal as a warm start at n_nodes >= 121.
+    # We pipe the first flight's nominal solution into every subsequent
+    # flight's ``generate_experts`` call to maximise convergence
+    # robustness.
+    first_nominal_meta: Optional[CollocationResult] = None
+    for k, fid in enumerate(flight_ids):
+        per_flight_dir = out_dir / f"flight_{fid}"
+        warm = first_nominal_meta
+        fid_int = int(fid)
+        sub = generate_experts(
+            flight_id=fid_int,
+            out_dir=per_flight_dir,
+            n_perturbations=_flight_n_perturbations(fid_int, n_perturbations),
+            n_nodes=n_nodes,
+            seed=seed + 100 * k,
+            cfg=_flight_perturbation_cfg(fid_int),
+            warm_start=warm,
+        )
+        all_experts.extend(sub)
+        if first_nominal_meta is None and sub:
+            # Re-solve once to recover the CollocationResult (we only
+            # kept the FlightResult). Cheap because cold convergence on
+            # F1 already happened.
+            from ..common.io_config import load_aircraft, load_wind_field
+            fp = get_flight_plan(int(fid))
+            first_nominal_meta = solve_direct(
+                fp, load_aircraft(), load_wind_field(),
+                n_nodes=n_nodes, warm_start=None,
+            )
+    print(f"[multi-expert] multi-flight: kept {len(all_experts)} experts "
+          f"across {len(flight_ids)} flights")
+    return all_experts
 
 
 def aggregate_dataset(results: List[FlightResult]) -> tuple[np.ndarray, np.ndarray]:

@@ -51,11 +51,26 @@ class CollocationResult:
 
 
 def _ipopt_options(max_iter: int) -> dict:
-    """Project-standard IPOPT options (CLAUDE.md §Optimization guardrails)."""
+    """Project-standard IPOPT options (CLAUDE.md §Optimization guardrails).
+
+    Acceptable-termination thresholds are enabled so an iterate that has
+    been feasible to ~1e-8 and stalled at the optimal-cost plateau for
+    several iterations is accepted, rather than driven into
+    ``Error_In_Step_Computation`` when restoration cannot be entered.
+    This matters for Flight 2, whose true optimum sits on a tight
+    bang-bang active set; the unscaled NLP error gets stuck at ~1e-3
+    around the optimum and the strict ``tol=1e-6`` criterion is never met
+    even though the constraint violation is sub-nanosecond.
+    """
     return {
         "ipopt": {
             "linear_solver": "mumps",
             "tol": 1.0e-6,
+            "acceptable_tol": 1.0e-4,
+            "acceptable_iter": 15,
+            "acceptable_constr_viol_tol": 1.0e-6,
+            "acceptable_dual_inf_tol": 1.0e-2,
+            "acceptable_compl_inf_tol": 1.0e-4,
             "mu_strategy": "adaptive",
             "hessian_approximation": "limited-memory",
             "max_iter": max_iter,
@@ -70,7 +85,7 @@ def solve_direct(
     fp: FlightPlan,
     ac: AircraftParams,
     wf: WindField,
-    n_nodes: int = 61,
+    n_nodes: int = 241,
     v_cruise_mps: float = 235.0,
     max_iter: int = 3000,
     warm_start: Optional[CollocationResult] = None,
@@ -91,11 +106,8 @@ def solve_direct(
     Returns:
         `CollocationResult` with the unscaled trajectory and metadata.
     """
-    if n_nodes < 3 or (n_nodes - 1) % 2 != 0:
-        # Hermite-Simpson defects use one segment at a time, so even
-        # number of segments isn't strictly required, but it keeps the
-        # node count sensible.
-        pass
+    if n_nodes < 3:
+        raise ValueError("Need at least 3 nodes for Hermite-Simpson")
 
     guess = build_initial_guess(fp, ac, n_nodes=n_nodes, v_cruise_mps=v_cruise_mps)
     origin = guess.origin
@@ -260,15 +272,23 @@ def solve_direct(
         + (state_opt[-1, 2] - hd) ** 2
     )
 
+    return_status = str(stats.get("return_status", "unknown"))
+    # IPOPT's acceptable-termination flag (return_status
+    # "Solved_To_Acceptable_Level") still produces a usable trajectory:
+    # constraint violation is below acceptable_constr_viol_tol and the
+    # cost plateau is verified by ``acceptable_iter`` stable iterates.
+    converged = bool(stats.get("success", False)) or (
+        return_status == "Solved_To_Acceptable_Level"
+    )
     return CollocationResult(
         t=t_opt,
         state=state_opt,
         control=control_opt,
         tf=tf_opt,
         cost=pdf_cost,
-        converged=bool(stats.get("success", False)),
+        converged=converged,
         iter_count=int(stats.get("iter_count", -1)),
-        return_status=str(stats.get("return_status", "unknown")),
+        return_status=return_status,
         sol_x=z_opt,
     )
 

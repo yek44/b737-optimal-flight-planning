@@ -29,8 +29,14 @@ from scipy.spatial import cKDTree
 from stable_baselines3 import PPO
 
 from ..common.results import FlightResult
-from .bc_pretrain import build_dataset, evaluate_rollout, train_bc_once
-from .env import EnvConfig, FlightPlannerEnv, config_for_flight
+from .bc_pretrain import (
+    _rollout_score,
+    build_dataset,
+    evaluate_rollout_metrics,
+    evaluate_unified_rollout,
+    train_bc_once,
+)
+from .env import FLIGHT_IDS, EnvConfig, FlightPlannerEnv, config_for_flight
 from .multi_expert import aggregate_dataset
 
 
@@ -172,9 +178,14 @@ def run_dagger(
     # always fall back to the seed-search winner if every DAgger round
     # regresses.
     model = PPO.load(bc_policy_path, device="cpu")
-    bc_dist, bc_fuel = evaluate_rollout(model, flight_id, cfg)
+    bc_rollout = evaluate_rollout_metrics(model, flight_id, cfg)
+    bc_dist = float(bc_rollout["closest_xy_dist_m"])
+    bc_fuel = float(bc_rollout["fuel_final_kg"])
     print(f"[DAgger] flight {flight_id} BC baseline: "
-          f"closest={bc_dist / 1000:.2f} km, fuel={bc_fuel:.0f} kg")
+          f"goal={bc_rollout['reached_goal']} "
+          f"closest_xy={bc_dist / 1000:.2f} km, "
+          f"goal_miss={bc_rollout['closest_goal_violation_m']:.0f} m, "
+          f"fuel={bc_fuel:.0f} kg")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     policy_path = out_dir / "policy.zip"
@@ -182,20 +193,16 @@ def run_dagger(
     # when a round strictly improves on the scoring rubric.
     model.save(policy_path)
 
-    def _score(dist_m: float, fuel_kg: float) -> float:
-        """Lower is better. Reached-disk rounds compared by fuel; unreached
-        rounds compared by closest-approach distance with a stiff offset
-        so any reached round dominates any unreached round."""
-        disk_radius_m = cfg.terminal_radius_m
-        if dist_m <= disk_radius_m:
-            return float(fuel_kg)
-        return 1.0e9 + float(dist_m)
-
-    best_score = _score(bc_dist, bc_fuel)
+    best_score = _rollout_score(bc_rollout)
     best_round = 0
     metrics: dict = {
         "rounds": [],
-        "bc_baseline": {"closest_km": bc_dist / 1000, "fuel_kg": bc_fuel},
+        "bc_baseline": {
+            "goal_reached": bc_rollout["reached_goal"],
+            "closest_km": bc_dist / 1000,
+            "goal_miss_m": bc_rollout["closest_goal_violation_m"],
+            "fuel_kg": bc_fuel,
+        },
     }
     obs_aug = obs_bc.copy()
     act_aug = act_bc.copy()
@@ -223,17 +230,23 @@ def run_dagger(
         model = train_bc_once(obs_aug, act_aug, flight_id, cfg,
                               epochs=epochs_per_round, lr=lr,
                               batch_size=batch_size, seed=seed)
-        dist, fuel = evaluate_rollout(model, flight_id, cfg)
-        round_score = _score(dist, fuel)
+        rollout = evaluate_rollout_metrics(model, flight_id, cfg)
+        dist = float(rollout["closest_xy_dist_m"])
+        fuel = float(rollout["fuel_final_kg"])
+        round_score = _rollout_score(rollout)
         improved = round_score < best_score
         marker = "*best*" if improved else ""
-        print(f"[DAgger] round {r + 1}: closest={dist / 1000:.2f} km, "
+        print(f"[DAgger] round {r + 1}: goal={rollout['reached_goal']} "
+              f"closest_xy={dist / 1000:.2f} km, "
+              f"goal_miss={rollout['closest_goal_violation_m']:.0f} m, "
               f"fuel={fuel:.0f} kg {marker}")
         metrics["rounds"].append({
             "round": r + 1,
             "kept": n_kept,
             "dataset_size": int(obs_aug.shape[0]),
+            "goal_reached": rollout["reached_goal"],
             "closest_km": dist / 1000,
+            "goal_miss_m": rollout["closest_goal_violation_m"],
             "fuel_kg": fuel,
             "score": round_score,
         })
@@ -246,6 +259,175 @@ def run_dagger(
     metrics["best_score"] = best_score
     print(f"[DAgger] flight {flight_id}: best round {best_round} "
           f"(score={best_score:.1f}) saved -> {policy_path}")
+    return policy_path, metrics
+
+
+def _split_experts_by_flight(
+    experts: Sequence[FlightResult],
+) -> dict[int, List[FlightResult]]:
+    """Group experts by their ``flight_id`` for per-flight kNN indices."""
+    by_flight: dict[int, List[FlightResult]] = {}
+    for fr in experts:
+        by_flight.setdefault(int(fr.flight_id), []).append(fr)
+    return by_flight
+
+
+def collect_rollout_with_flight(
+    model: PPO, flight_id: int, cfg: EnvConfig,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Roll the policy out on a specific flight (no random sampling).
+
+    Returns ``(states, actions, obs)`` for use in the DAgger correction
+    loop. Identical to :func:`collect_rollout` but explicitly forces
+    the env to that flight via ``reset(options=...)``.
+    """
+    env = FlightPlannerEnv(flight_id=int(flight_id), cfg=cfg)
+    obs, _ = env.reset(seed=0, options={"flight_id": int(flight_id)})
+    states: List[np.ndarray] = []
+    actions: List[np.ndarray] = []
+    obs_list: List[np.ndarray] = []
+    done = False
+    trunc = False
+    while not (done or trunc):
+        a, _ = model.predict(obs.reshape(1, -1), deterministic=True)
+        states.append(env.state.copy())
+        actions.append(np.asarray(a[0], dtype=np.float32))
+        obs_list.append(obs.astype(np.float32))
+        obs, _, done, trunc, _ = env.step(a[0])
+    return (
+        np.asarray(states, dtype=np.float64),
+        np.asarray(actions, dtype=np.float32),
+        np.asarray(obs_list, dtype=np.float32),
+    )
+
+
+def run_dagger_unified(
+    experts: Sequence[FlightResult],
+    bc_policy_path: Path,
+    out_dir: Path,
+    n_rounds: int = 4,
+    epochs_per_round: int = 120,
+    lr: float = 5.0e-4,
+    batch_size: int = 256,
+    seed: int = 0,
+    residual_threshold: float = 0.05,
+    flight_ids: Sequence[int] = FLIGHT_IDS,
+) -> Tuple[Path, dict]:
+    """DAgger refinement for the single unified policy.
+
+    For each round we roll the current policy out **on every test
+    flight** in sequence, query the per-flight kNN of expert states,
+    aggregate the new (obs, corrected_action) pairs, and retrain. The
+    rollout-on-every-flight pattern is critical: training only on the
+    flight the policy already handles best would amplify the imbalance.
+
+    Each round is scored by :func:`evaluate_unified_rollout` and only
+    overwrites ``policy.zip`` if the aggregate score improves over the
+    BC baseline / previous best.
+    """
+    cfg = EnvConfig()
+    obs_bc, act_bc, env = build_dataset(experts, "random", cfg=cfg)
+
+    # Build a per-flight kNN index so corrections come from the
+    # expert manifold of the flight the rollout was on. Using a single
+    # global kNN would mix flights and propose corrections from a
+    # different scenario, which empirically destabilises DAgger.
+    grouped = _split_experts_by_flight(experts)
+    trees: dict[int, Tuple[cKDTree, np.ndarray]] = {}
+    for fid, sub in grouped.items():
+        trees[fid] = _build_knn(sub)
+        print(f"[DAgger-U] flight {fid}: kNN built over "
+              f"{trees[fid][1].shape[0]} pairs")
+
+    # Score BC baseline as round 0.
+    model = PPO.load(bc_policy_path, device="cpu")
+    bc_agg = evaluate_unified_rollout(model, cfg, flight_ids=flight_ids)
+    bc_score = float(bc_agg["total_score"])
+    print(f"[DAgger-U] BC baseline: reached "
+          f"{bc_agg['n_reached']}/{len(flight_ids)}, "
+          f"score={bc_score:.3e}")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    policy_path = out_dir / "policy.zip"
+    model.save(policy_path)
+
+    best_score = bc_score
+    best_round = 0
+    metrics: dict = {
+        "rounds": [],
+        "bc_baseline": {
+            "n_reached": int(bc_agg["n_reached"]),
+            "score": bc_score,
+            "per_flight": {
+                int(fid): {
+                    "reached_goal": bool(m["reached_goal"]),
+                    "goal_miss_m": float(m["closest_goal_violation_m"]),
+                    "fuel_kg": float(m["fuel_final_kg"]),
+                }
+                for fid, m in bc_agg["per_flight"].items()
+            },
+        },
+    }
+    obs_aug = obs_bc.copy()
+    act_aug = act_bc.copy()
+
+    for r in range(n_rounds):
+        # Roll out on every flight; collect (state, obs, action).
+        kept_total = 0
+        for fid in flight_ids:
+            states_r, _, obs_r = collect_rollout_with_flight(
+                model, int(fid), cfg,
+            )
+            tree, expert_controls_phys = trees[int(fid)]
+            keep, corr_actions = correct_with_knn(
+                states_r, tree, expert_controls_phys, env,
+                residual_threshold=residual_threshold,
+            )
+            n_kept = int(np.sum(keep))
+            kept_total += n_kept
+            if n_kept > 0:
+                obs_aug = np.concatenate([obs_aug, obs_r[keep]], axis=0)
+                act_aug = np.concatenate([act_aug, corr_actions[keep]], axis=0)
+            print(f"[DAgger-U] round {r + 1}/{n_rounds} flight {fid}: "
+                  f"{states_r.shape[0]} steps, kept {n_kept} corrections")
+        print(f"[DAgger-U] round {r + 1}: dataset {obs_aug.shape[0]} pairs "
+              f"(+{kept_total} this round)")
+
+        # Retrain on the augmented mixed-flight dataset.
+        model = train_bc_once(obs_aug, act_aug, "random", cfg,
+                              epochs=epochs_per_round, lr=lr,
+                              batch_size=batch_size, seed=seed)
+        agg = evaluate_unified_rollout(model, cfg, flight_ids=flight_ids)
+        score = float(agg["total_score"])
+        improved = score < best_score
+        marker = "*best*" if improved else ""
+        print(f"[DAgger-U] round {r + 1}: reached "
+              f"{agg['n_reached']}/{len(flight_ids)}, "
+              f"score={score:.3e} {marker}")
+        metrics["rounds"].append({
+            "round": int(r + 1),
+            "kept": int(kept_total),
+            "dataset_size": int(obs_aug.shape[0]),
+            "n_reached": int(agg["n_reached"]),
+            "score": score,
+            "per_flight": {
+                int(fid): {
+                    "reached_goal": bool(m["reached_goal"]),
+                    "goal_miss_m": float(m["closest_goal_violation_m"]),
+                    "fuel_kg": float(m["fuel_final_kg"]),
+                }
+                for fid, m in agg["per_flight"].items()
+            },
+        })
+        if improved:
+            best_score = score
+            best_round = r + 1
+            model.save(policy_path)
+
+    metrics["best_round"] = int(best_round)
+    metrics["best_score"] = float(best_score)
+    print(f"[DAgger-U] best round {best_round} (score={best_score:.3e}) "
+          f"saved -> {policy_path}")
     return policy_path, metrics
 
 

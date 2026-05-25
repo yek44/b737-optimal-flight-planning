@@ -27,17 +27,10 @@ from pathlib import Path
 
 from stable_baselines3 import PPO
 
-from .bc_pretrain import evaluate_rollout
+from .bc_pretrain import _rollout_score, evaluate_rollout_metrics
 from .env import config_for_flight
 from .multi_expert import generate_experts
 from .train import ppo_fine_tune
-
-
-def _score(dist_m: float, fuel_kg: float, disk_radius_m: float) -> float:
-    """Same rubric as bc_pretrain / dagger best-of selection."""
-    if dist_m <= disk_radius_m:
-        return float(fuel_kg)
-    return 1.0e9 + float(dist_m)
 
 
 def main() -> None:
@@ -71,11 +64,15 @@ def main() -> None:
 
     # Baseline: score the BC source so we can compare PPO to it later.
     bc_model = PPO.load(bc_source, device="cpu")
-    bc_dist, bc_fuel = evaluate_rollout(bc_model, flight_id, cfg)
-    bc_score = _score(bc_dist, bc_fuel, cfg.terminal_radius_m)
+    bc_rollout = evaluate_rollout_metrics(bc_model, flight_id, cfg)
+    bc_dist = float(bc_rollout["closest_xy_dist_m"])
+    bc_fuel = float(bc_rollout["fuel_final_kg"])
+    bc_score = _rollout_score(bc_rollout)
     print(f"[fine_tune_only] flight {flight_id}: BC baseline "
-          f"closest={bc_dist / 1000:.2f} km, fuel={bc_fuel:.0f} kg "
-          f"(score={bc_score:.1f})")
+          f"goal={bc_rollout['reached_goal']} "
+          f"closest_xy={bc_dist / 1000:.2f} km, "
+          f"goal_miss={bc_rollout['closest_goal_violation_m']:.0f} m, "
+          f"fuel={bc_fuel:.0f} kg (score={bc_score:.1f})")
 
     print(f"[fine_tune_only] flight {flight_id}: regenerating experts "
           f"(n_perturb={args.n_perturb}) ...")
@@ -109,12 +106,17 @@ def main() -> None:
     metrics["bc_source"] = args.bc_source
     metrics["flight_id"] = flight_id
     metrics["bc_baseline"] = {
+        "goal_reached": bc_rollout["reached_goal"],
         "closest_km": bc_dist / 1000,
+        "goal_miss_m": bc_rollout["closest_goal_violation_m"],
         "fuel_kg": bc_fuel,
         "score": bc_score,
     }
-    ppo_score = _score(metrics["closest_km"] * 1000.0,
-                       metrics["fuel_kg"], cfg.terminal_radius_m)
+    ppo_score = (
+        float(metrics["fuel_kg"])
+        if metrics.get("goal_reached")
+        else 1.0e9 + float(metrics.get("goal_miss_m", 0.0))
+    )
     metrics["ppo_score"] = ppo_score
     metrics["accepted"] = ppo_score < bc_score
     if not metrics["accepted"]:

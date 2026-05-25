@@ -28,13 +28,14 @@ import argparse
 import dataclasses
 import json
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import numpy as np
 from stable_baselines3 import PPO
 
 from ..common.io_config import FlightPlan, InitialState, get_flight_plan
 from .env import EnvConfig, FlightPlannerEnv, config_for_flight
+from .evaluate import _locate_policy
 
 
 def _perturbed_initial(fp: FlightPlan, rng: np.random.Generator,
@@ -64,7 +65,7 @@ def _perturbed_initial(fp: FlightPlan, rng: np.random.Generator,
 
 
 def _rollout_with_ic(model: PPO, flight_id: int, cfg: EnvConfig,
-                     fp: FlightPlan) -> Dict[str, float]:
+                     fp: FlightPlan) -> Dict[str, Any]:
     """Roll the saved policy out from a custom initial state."""
     env = FlightPlannerEnv(flight_id=flight_id, cfg=cfg)
     env.fp = fp  # override the per-flight default
@@ -74,20 +75,32 @@ def _rollout_with_ic(model: PPO, flight_id: int, cfg: EnvConfig,
     xd, yd = lla_to_enu(fp.destination.lambda_deg,
                         fp.destination.phi_deg, env.origin)
     env.dest_xyz = np.array([float(xd), float(yd), fp.destination.h_m])
+    env._init_h = float(fp.initial.h_m)
+    env._dest_h = float(fp.destination.h_m)
 
     obs, _ = env.reset(seed=0)
     done = False
     trunc = False
     while not (done or trunc):
-        a, _ = model.predict(obs.reshape(1, -1), deterministic=True)
-        obs, _, done, trunc, _ = env.step(a[0])
-    _, state, _ = env.trajectory_arrays()
-    fuel = float(fp.initial.m_kg - state[-1, 5])
+        dxy = float(np.linalg.norm(env.state[:2] - env.dest_xyz[:2]))
+        if dxy <= cfg.terminal_guidance_radius_m:
+            a = env.terminal_guidance_action()
+        else:
+            a, _ = model.predict(obs.reshape(1, -1), deterministic=True)
+            a = a[0]
+        obs, _, done, trunc, _ = env.step(a)
+    metrics = env.trajectory_metrics()
     return {
-        "closest_dist_m": float(env._closest_dist),
-        "fuel_kg": fuel,
-        "reached_disk": bool(env._closest_dist <= cfg.terminal_radius_m),
-        "duration_s": float(env._step_idx * cfg.dt_s),
+        "closest_dist_m": float(metrics["closest_xy_dist_m"]),
+        "closest_goal_violation_m": float(metrics["closest_goal_violation_m"]),
+        "closest_h_err_m": float(metrics["closest_xy_h_err_m"]),
+        "final_xy_dist_m": float(metrics["final_xy_dist_m"]),
+        "final_h_err_m": float(metrics["final_h_err_m"]),
+        "fuel_kg": float(metrics["fuel_final_kg"]),
+        "reached_goal": bool(metrics["reached_goal"]),
+        "reached_disk": bool(metrics["reached_goal"]),
+        "termination_reason": str(metrics["termination_reason"]),
+        "duration_s": float(metrics["duration_final_s"]),
     }
 
 
@@ -96,11 +109,10 @@ def benchmark_flight(flight_id: int, models_root: Path, results_root: Path,
     """Run the perturbed-IC benchmark for one flight."""
     cfg = config_for_flight(flight_id)
     fp_nom = get_flight_plan(flight_id)
-    model = PPO.load(models_root / f"flight_{flight_id}" / "policy.zip",
-                     device="cpu")
+    model = PPO.load(_locate_policy(models_root, flight_id), device="cpu")
 
     rng = np.random.default_rng(seed)
-    trials: List[Dict[str, float]] = []
+    trials: List[Dict[str, Any]] = []
     for k in range(n_trials):
         fp_k = _perturbed_initial(fp_nom, rng)
         result = _rollout_with_ic(model, flight_id, cfg, fp_k)
@@ -120,6 +132,8 @@ def benchmark_flight(flight_id: int, models_root: Path, results_root: Path,
         "disk_reach_rate": len(reached) / n_trials,
         "median_closest_km": float(np.median(
             [t["closest_dist_m"] / 1000 for t in trials])),
+        "median_goal_miss_m": float(np.median(
+            [t["closest_goal_violation_m"] for t in trials])),
         "median_fuel_kg": float(np.median([t["fuel_kg"] for t in trials])),
         "fuel_std_kg": float(np.std([t["fuel_kg"] for t in trials])),
     }

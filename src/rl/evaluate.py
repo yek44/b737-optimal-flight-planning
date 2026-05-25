@@ -1,10 +1,15 @@
-"""Roll out the trained policy and persist a :class:`FlightResult`.
+"""Roll out the unified trained policy and persist :class:`FlightResult` outputs.
 
-Loads ``models/rl/flight_<id>/policy.zip``, runs it deterministically in
-the per-flight env, and writes the same canonical artefacts the direct-
-collocation solver produces (``solution.npz``, ``meta.json``, the 8
-standard PNG plots). Identical naming makes the cross-method overlay in
-:mod:`src.compare.make_report_figs` trivial.
+By default this evaluates the *single* policy at
+``models/rl/unified/policy.zip`` on each of the three test flights, in
+keeping with the project rule that one trained policy must fly all
+scenarios. If the unified file is missing the loader falls back to the
+legacy per-flight ``models/rl/flight_<id>/policy.zip`` layout so older
+checkpoints stay loadable.
+
+The output layout (``results/rl/flight_<id>/{solution.npz, meta.json}``
+plus the 8 standard PNGs) is unchanged so the comparison overlays and
+the report figures pick the files up without modification.
 """
 from __future__ import annotations
 
@@ -14,37 +19,67 @@ from pathlib import Path
 import numpy as np
 from stable_baselines3 import PPO
 
+from ..common.cost import TIME_PENALTY
 from ..common.io_config import load_aircraft
 from ..common.plotting import make_eight_plots
 from ..common.results import FlightResult
-from .env import FlightPlannerEnv, config_for_flight
+from .env import EnvConfig, FlightPlannerEnv
+
+
+def _locate_policy(models_root: Path, flight_id: int) -> Path:
+    """Find the policy to evaluate for ``flight_id``.
+
+    Preference order:
+    1. ``models_root / "unified" / "policy.zip"`` (project-required single policy).
+    2. ``models_root / f"flight_{flight_id}" / "policy.zip"`` (legacy fallback).
+    """
+    unified = models_root / "unified" / "policy.zip"
+    if unified.exists():
+        return unified
+    legacy = models_root / f"flight_{flight_id}" / "policy.zip"
+    if legacy.exists():
+        return legacy
+    raise FileNotFoundError(
+        f"No policy.zip under {models_root}/unified/ or "
+        f"{models_root}/flight_{flight_id}/."
+    )
 
 
 def evaluate(flight_id: int, models_root: Path, results_root: Path) -> FlightResult:
-    """Roll out one flight; persist results; return a ``FlightResult``."""
-    cfg = config_for_flight(flight_id)
-    indir = models_root / f"flight_{flight_id}"
-    model = PPO.load(indir / "policy.zip", device="cpu")
+    """Roll the (unified) policy out on one test flight; persist results."""
+    cfg = EnvConfig()
+    policy_path = _locate_policy(models_root, flight_id)
+    model = PPO.load(policy_path, device="cpu")
+    is_unified = (policy_path.parent.name == "unified")
+    algo = "unified BC+DAgger" if is_unified else "per-flight BC+DAgger"
 
-    env = FlightPlannerEnv(flight_id=flight_id, cfg=cfg)
-    obs, _ = env.reset(seed=0)
+    env = FlightPlannerEnv(flight_id=int(flight_id), cfg=cfg)
+    obs, _ = env.reset(seed=0, options={"flight_id": int(flight_id)})
     done = False
     truncated = False
     while not (done or truncated):
-        action, _ = model.predict(obs.reshape(1, -1), deterministic=True)
-        obs, _, done, truncated, _ = env.step(action[0])
+        dxy = float(np.linalg.norm(env.state[:2] - env.dest_xyz[:2]))
+        if dxy <= cfg.terminal_guidance_radius_m:
+            action = env.terminal_guidance_action()
+        else:
+            action, _ = model.predict(obs.reshape(1, -1), deterministic=True)
+            action = action[0]
+        obs, _, done, truncated, _ = env.step(action)
 
     t, state, control = env.trajectory_arrays()
+    metrics = env.trajectory_metrics()
     if control.shape[0] == 0:
         control = np.zeros((1, 3))
 
     fp = env.fp
-    fuel_total = float(fp.initial.m_kg - state[-1, 5])
-    duration = float(t[-1])
-    cost = (cfg.time_weight * duration
-            + (state[-1, 0] - env.dest_xyz[0]) ** 2
-            + (state[-1, 1] - env.dest_xyz[1]) ** 2
-            + (state[-1, 2] - env.dest_xyz[2]) ** 2)
+    fuel_total = metrics["fuel_final_kg"]
+    duration = metrics["duration_final_s"]
+    final_terminal_error = (
+        (state[-1, 0] - env.dest_xyz[0]) ** 2
+        + (state[-1, 1] - env.dest_xyz[1]) ** 2
+        + (state[-1, 2] - env.dest_xyz[2]) ** 2
+    )
+    cost = fuel_total + TIME_PENALTY * duration + final_terminal_error
 
     fr = FlightResult(
         method="rl",
@@ -53,21 +88,30 @@ def evaluate(flight_id: int, models_root: Path, results_root: Path) -> FlightRes
         fuel_total_kg=fuel_total,
         duration_s=duration,
         cost=float(cost),
-        converged=True,
+        converged=bool(metrics["reached_goal"]),
         origin_lambda_deg=fp.initial.lambda_deg,
         origin_phi_deg=fp.initial.phi_deg,
         solver_meta={
-            "algo": "BC+DAgger",
+            "algo": algo,
+            "policy_path": str(policy_path),
+            "is_unified": is_unified,
             "dt_s": cfg.dt_s,
             "n_steps": int(state.shape[0]),
-            "closest_dist_m": float(env._closest_dist),
+            "terminal_guidance": True,
+            "terminal_guidance_radius_m": cfg.terminal_guidance_radius_m,
+            **metrics,
         },
     )
     outdir = results_root / f"flight_{flight_id}"
     fr.save(outdir)
     make_eight_plots(fr, load_aircraft(), outdir)
     print(fr.summary())
-    print(f"  closest_dist: {env._closest_dist / 1000:.2f} km")
+    print(
+        f"  goal={metrics['reached_goal']} | "
+        f"closest_xy={metrics['closest_xy_dist_m'] / 1000:.2f} km | "
+        f"closest_goal_violation={metrics['closest_goal_violation_m']:.1f} m | "
+        f"reason={metrics['termination_reason']}"
+    )
     return fr
 
 

@@ -28,7 +28,14 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from ..common.results import FlightResult
-from .env import ACTION_HISTORY_LEN, EnvConfig, FlightPlannerEnv, config_for_flight
+from .env import (
+    ACTION_HISTORY_LEN,
+    FLIGHT_IDS,
+    OBS_DIM,
+    EnvConfig,
+    FlightPlannerEnv,
+    config_for_flight,
+)
 from .multi_expert import generate_experts
 
 
@@ -37,16 +44,22 @@ def _expert_to_pairs(fr: FlightResult, env: FlightPlannerEnv
     """Convert a single expert trajectory to (obs, action) pairs.
 
     The expert is resampled onto the env's ``dt_s`` grid via piecewise
-    linear interpolation in state and control. Observations are produced
-    by :meth:`FlightPlannerEnv.observe_state`, so each pair carries the
-    same action-history context the live env would supply.
+    linear interpolation in state and control. The env is rebound to
+    ``fr.flight_id`` before observations are computed so that the
+    one-hot flight encoding and the per-flight destination embedded in
+    each observation match the expert's actual scenario. After the call
+    the env is left bound to whichever flight it was on.
 
-    Note: when the perturbed expert starts at a non-zero ENU origin
-    (because its flight plan moved the LLA origin), we shift it back so
-    every expert is expressed in the *nominal* env's frame. This keeps
-    the BC dataset consistent with what the policy actually sees at
-    test time.
+    When the perturbed expert was solved from a shifted LLA origin we
+    transform every (x, y) sample back to the flight's nominal ENU
+    frame so the BC dataset is consistent with what the live policy
+    sees when ``reset`` puts the aircraft at ``(0, 0)`` of the nominal
+    origin.
     """
+    # Bind the env to this expert's flight; per-flight destination /
+    # one-hot follow automatically through the rebind.
+    env._bind_flight(fr.flight_id)
+
     t_expert = np.asarray(fr.t)
     state_expert = np.asarray(fr.state).copy()
     control_expert = np.asarray(fr.control).copy()
@@ -83,10 +96,10 @@ def _expert_to_pairs(fr: FlightResult, env: FlightPlannerEnv
     # Normalise expert controls to [-1, 1] for the action space.
     a_arr = env.physical_to_action(control_resampled)
 
-    # Reset once so the env's normalisation state (e.g. ``_init_dist``)
-    # is initialised against the *nominal* IC.  We then poke states in
+    # Reset against this expert's own flight so ``_init_dist`` reflects
+    # the right scenario for obs normalisation. We then poke states in
     # via ``observe_state`` without driving them through ``step``.
-    env.reset(seed=0)
+    env.reset(seed=0, options={"flight_id": fr.flight_id})
 
     obs_list: List[np.ndarray] = []
     n = state_resampled.shape[0]
@@ -105,15 +118,20 @@ def _expert_to_pairs(fr: FlightResult, env: FlightPlannerEnv
     return obs_arr, a_arr.astype(np.float32)
 
 
-def build_dataset(experts: Sequence[FlightResult], flight_id: int,
+def build_dataset(experts: Sequence[FlightResult],
+                  flight_id: int | str = "random",
                   cfg: Optional[EnvConfig] = None
                   ) -> tuple[np.ndarray, np.ndarray, FlightPlannerEnv]:
     """Stack (obs, action) pairs from every expert trajectory.
 
-    Returns the concatenated arrays plus a fresh nominal env (handy for
-    the caller to reuse without re-instantiating).
+    Handles mixed-flight expert lists transparently: each expert's
+    obs is computed with the env bound to its own ``flight_id`` (see
+    :func:`_expert_to_pairs`). The returned env is left in
+    ``flight_id`` mode for the caller's convenience -- pass
+    ``flight_id="random"`` to let downstream training pick a fresh
+    flight per reset.
     """
-    cfg = cfg or config_for_flight(flight_id)
+    cfg = cfg or EnvConfig()
     env = FlightPlannerEnv(flight_id=flight_id, cfg=cfg)
     obs_chunks: List[np.ndarray] = []
     act_chunks: List[np.ndarray] = []
@@ -124,13 +142,19 @@ def build_dataset(experts: Sequence[FlightResult], flight_id: int,
     if obs_chunks:
         obs = np.concatenate(obs_chunks, axis=0)
     else:
-        obs = np.zeros((0, env.observation_space.shape[0]))
+        obs = np.zeros((0, OBS_DIM), dtype=np.float32)
     act = np.concatenate(act_chunks, axis=0) if act_chunks else np.zeros((0, 3))
     return obs.astype(np.float32), act.astype(np.float32), env
 
 
-def _make_ppo(flight_id: int, cfg: EnvConfig, seed: int) -> PPO:
-    """Construct a fresh PPO model with the project's standard layout."""
+def _make_ppo(flight_id: int | str, cfg: EnvConfig, seed: int) -> PPO:
+    """Construct a fresh PPO model with the project's standard layout.
+
+    The network is wider (``[256, 256]``) than the per-flight default
+    because the unified policy has to specialise to three scenarios
+    via the flight one-hot, and the previous ``[128, 128]`` MLP was
+    visibly capacity-bound when trained on the mixed dataset.
+    """
     vec_env = DummyVecEnv([lambda: FlightPlannerEnv(flight_id=flight_id, cfg=cfg)])
     return PPO(
         "MlpPolicy", vec_env,
@@ -139,12 +163,12 @@ def _make_ppo(flight_id: int, cfg: EnvConfig, seed: int) -> PPO:
         gamma=cfg.gamma, gae_lambda=0.95, clip_range=0.2,
         ent_coef=0.0, vf_coef=0.5, max_grad_norm=0.5,
         seed=seed, verbose=0,
-        policy_kwargs={"net_arch": [128, 128]},
+        policy_kwargs={"net_arch": [256, 256]},
         device="cpu",
     )
 
 
-def train_bc_once(obs: np.ndarray, act: np.ndarray, flight_id: int,
+def train_bc_once(obs: np.ndarray, act: np.ndarray, flight_id: int | str,
                   cfg: EnvConfig, epochs: int, lr: float, batch_size: int,
                   seed: int) -> PPO:
     """Train a single BC policy under a given torch seed."""
@@ -181,29 +205,73 @@ def train_bc_once(obs: np.ndarray, act: np.ndarray, flight_id: int,
     return model
 
 
-def evaluate_rollout(model: PPO, flight_id: int,
-                     cfg: EnvConfig) -> tuple[float, float]:
-    """Roll a model out deterministically; return (closest_dist, fuel)."""
-    env = FlightPlannerEnv(flight_id=flight_id, cfg=cfg)
+def evaluate_rollout_metrics(
+    model: PPO,
+    flight_id: int,
+    cfg: EnvConfig,
+    use_terminal_guidance: bool = True,
+) -> dict:
+    """Roll a model out deterministically on one flight; return goal metrics."""
+    env = FlightPlannerEnv(flight_id=int(flight_id), cfg=cfg)
     obs, _ = env.reset(seed=0)
     done = False
     trunc = False
     while not (done or trunc):
-        a, _ = model.predict(obs.reshape(1, -1), deterministic=True)
-        obs, _, done, trunc, _ = env.step(a[0])
-    _, state, _ = env.trajectory_arrays()
-    fuel = float(env.fp.initial.m_kg - state[-1, 5])
-    return float(env._closest_dist), fuel
+        dxy = float(np.linalg.norm(env.state[:2] - env.dest_xyz[:2]))
+        if use_terminal_guidance and dxy <= cfg.terminal_guidance_radius_m:
+            a = env.terminal_guidance_action()
+        else:
+            a, _ = model.predict(obs.reshape(1, -1), deterministic=True)
+            a = a[0]
+        obs, _, done, trunc, _ = env.step(a)
+    return env.trajectory_metrics()
 
 
-def _rollout_score(dist_m: float, fuel_kg: float,
-                   disk_radius_m: float) -> float:
-    """Lower is better. Reached-disk rollouts compared by fuel; unreached
-    rollouts compared by closest-approach distance with a large offset so
-    any reached rollout dominates any unreached one."""
-    if dist_m <= disk_radius_m:
-        return float(fuel_kg)
-    return 1.0e9 + float(dist_m)
+def evaluate_rollout(model: PPO, flight_id: int,
+                     cfg: EnvConfig) -> tuple[float, float]:
+    """Roll a model out deterministically; return legacy (closest_xy, fuel)."""
+    metrics = evaluate_rollout_metrics(model, flight_id, cfg)
+    return float(metrics["closest_xy_dist_m"]), float(metrics["fuel_final_kg"])
+
+
+def _rollout_score(metrics: dict) -> float:
+    """Lower is better; successful rollouts compare by fuel, failures by miss."""
+    if bool(metrics["reached_goal"]):
+        return float(metrics["fuel_final_kg"])
+    return 1.0e9 + float(metrics["closest_goal_violation_m"])
+
+
+def evaluate_unified_rollout(
+    model: PPO,
+    cfg: EnvConfig,
+    flight_ids: Sequence[int] = FLIGHT_IDS,
+    use_terminal_guidance: bool = True,
+) -> dict:
+    """Run one policy on every test flight and return per-flight + aggregate metrics.
+
+    The aggregate score is the sum of per-flight scores under
+    :func:`_rollout_score`, so a single bad flight cannot mask two good
+    ones. This is the criterion :func:`bc_seed_search_unified` uses to
+    pick the best seed.
+    """
+    per_flight: dict[int, dict] = {}
+    total_score = 0.0
+    reached = 0
+    for fid in flight_ids:
+        m = evaluate_rollout_metrics(
+            model, int(fid), cfg,
+            use_terminal_guidance=use_terminal_guidance,
+        )
+        per_flight[int(fid)] = m
+        total_score += _rollout_score(m)
+        if m["reached_goal"]:
+            reached += 1
+    return {
+        "per_flight": per_flight,
+        "total_score": total_score,
+        "n_reached": reached,
+        "n_flights": len(flight_ids),
+    }
 
 
 def bc_seed_search(
@@ -235,32 +303,120 @@ def bc_seed_search(
     best_score = float("inf")
     best_dist = float("inf")
     best_fuel = float("inf")
+    best_goal = False
+    best_goal_miss = float("inf")
     metrics: dict = {"per_seed": []}
     for seed in seeds:
         model = train_bc_once(obs, act, flight_id, cfg, epochs=epochs,
                               lr=lr, batch_size=batch_size, seed=seed)
         cand_path = out_dir / f"bc_policy_seed{seed}.zip"
         model.save(cand_path)
-        dist, fuel = evaluate_rollout(model, flight_id, cfg)
-        score = _rollout_score(dist, fuel, cfg.terminal_radius_m)
+        rollout = evaluate_rollout_metrics(model, flight_id, cfg)
+        dist = float(rollout["closest_xy_dist_m"])
+        fuel = float(rollout["fuel_final_kg"])
+        score = _rollout_score(rollout)
         marker = "*best*" if score < best_score else ""
-        print(f"  [BC seed={seed:4d}] closest={dist / 1000:.2f} km, "
+        print(f"  [BC seed={seed:4d}] goal={rollout['reached_goal']} "
+              f"closest_xy={dist / 1000:.2f} km, "
+              f"goal_miss={rollout['closest_goal_violation_m']:.0f} m, "
               f"fuel={fuel:.0f} kg {marker}")
         metrics["per_seed"].append({"seed": seed, "closest_km": dist / 1000,
+                                    "goal_reached": rollout["reached_goal"],
+                                    "goal_miss_m": rollout["closest_goal_violation_m"],
                                     "fuel_kg": fuel, "score": score})
         if score < best_score:
             best_score = score
             best_dist = dist
             best_fuel = fuel
+            best_goal = bool(rollout["reached_goal"])
+            best_goal_miss = float(rollout["closest_goal_violation_m"])
             best_seed = seed
     winner = out_dir / f"bc_policy_seed{best_seed}.zip"
     shutil.copy(str(winner), str(best_path))
     print(f"[BC] flight {flight_id}: best seed={best_seed} "
-          f"closest={best_dist / 1000:.2f} km, fuel={best_fuel:.0f} kg")
+          f"goal={best_goal} closest_xy={best_dist / 1000:.2f} km, "
+          f"goal_miss={best_goal_miss:.0f} m, fuel={best_fuel:.0f} kg")
     metrics["best_seed"] = best_seed
+    metrics["best_goal_reached"] = best_goal
     metrics["best_closest_km"] = best_dist / 1000
+    metrics["best_goal_miss_m"] = best_goal_miss
     metrics["best_fuel_kg"] = best_fuel
     metrics["best_score"] = best_score
+    return best_path, metrics
+
+
+def bc_seed_search_unified(
+    experts: Sequence[FlightResult],
+    out_dir: Path,
+    epochs: int = 400,
+    batch_size: int = 256,
+    lr: float = 1.0e-3,
+    seeds: Sequence[int] = (0, 7, 17, 31, 42, 100, 123, 1729, 2024),
+    flight_ids: Sequence[int] = FLIGHT_IDS,
+) -> tuple[Path, dict]:
+    """BC seed search for the unified (single-policy) formulation.
+
+    Trains one PPO network per seed on the *mixed-flight* expert
+    dataset, evaluates it on every flight individually, and keeps the
+    seed whose aggregate :func:`_rollout_score` (sum across flights) is
+    smallest. This matches the project rule that a single policy must
+    fly all three scenarios.
+    """
+    cfg = EnvConfig()
+    obs, act, _ = build_dataset(experts, flight_id="random", cfg=cfg)
+    print(f"[BC unified] {obs.shape[0]} (obs, action) pairs from "
+          f"{len(experts)} experts across "
+          f"{len({fr.flight_id for fr in experts})} flights")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    best_path = out_dir / "bc_policy.zip"
+    best_seed = seeds[0]
+    best_score = float("inf")
+    best_summary: dict = {}
+    metrics: dict = {"per_seed": []}
+    for seed in seeds:
+        model = train_bc_once(obs, act, "random", cfg, epochs=epochs,
+                              lr=lr, batch_size=batch_size, seed=seed)
+        cand_path = out_dir / f"bc_policy_seed{seed}.zip"
+        model.save(cand_path)
+        agg = evaluate_unified_rollout(model, cfg, flight_ids=flight_ids)
+        score = float(agg["total_score"])
+        marker = "*best*" if score < best_score else ""
+        per = agg["per_flight"]
+        print(f"  [BC seed={seed:4d}] reached={agg['n_reached']}/"
+              f"{agg['n_flights']} | "
+              + ", ".join([
+                  f"F{fid}: miss={per[fid]['closest_goal_violation_m']:.0f}m, "
+                  f"fuel={per[fid]['fuel_final_kg']:.0f}kg"
+                  for fid in flight_ids
+              ]) + f"  score={score:.3e} {marker}")
+        per_seed_row: dict[str, object] = {
+            "seed": int(seed),
+            "score": score,
+            "n_reached": int(agg["n_reached"]),
+            "per_flight": {
+                int(fid): {
+                    "reached_goal": bool(per[fid]["reached_goal"]),
+                    "goal_miss_m": float(per[fid]["closest_goal_violation_m"]),
+                    "fuel_kg": float(per[fid]["fuel_final_kg"]),
+                    "duration_s": float(per[fid]["duration_reported_s"]),
+                }
+                for fid in flight_ids
+            },
+        }
+        metrics["per_seed"].append(per_seed_row)
+        if score < best_score:
+            best_score = score
+            best_seed = seed
+            best_summary = per_seed_row
+    winner = out_dir / f"bc_policy_seed{best_seed}.zip"
+    shutil.copy(str(winner), str(best_path))
+    print(f"[BC unified] best seed={best_seed}, "
+          f"reached {best_summary['n_reached']}/{len(flight_ids)} disks, "
+          f"score={best_score:.3e}")
+    metrics["best_seed"] = int(best_seed)
+    metrics["best_score"] = float(best_score)
+    metrics["best_summary"] = best_summary
     return best_path, metrics
 
 

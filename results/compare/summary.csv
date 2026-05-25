@@ -1,7 +1,7 @@
-flight_id,method,fuel_kg,duration_min,cost,converged
-1,direct,8570.6,226.0,9.249e+03,True
-1,rl,8462.2,228.2,7.673e+07,True
-2,direct,3236.0,116.6,3.586e+03,True
-2,rl,2212.3,80.0,3.497e+08,True
-3,direct,4575.5,131.0,4.969e+03,True
-3,rl,4248.8,116.2,5.919e+07,True
+flight_id,method,fuel_kg,duration_min,cost,converged,closest_xy_km,closest_h_err_m,final_xy_km,final_h_err_m,goal_miss_m
+1,direct,8560.2,225.7,9.237e+03,True,0.0,0.0,0.0,0.0,0.0
+1,rl,8956.3,219.2,2.485e+05,True,0.48,67.3,0.48,67.3,0.0
+2,direct,2240.1,74.1,2.462e+03,True,0.0,0.0,0.0,0.0,0.0
+2,rl,2301.5,73.3,2.756e+05,True,0.48,201.7,0.48,201.7,0.0
+3,direct,4114.4,117.0,4.466e+03,True,0.0,0.0,0.0,0.0,0.0
+3,rl,4185.5,114.7,2.421e+05,True,0.45,196.5,0.45,196.5,0.0

@@ -68,3 +68,17 @@ report/*.synctex.gz
 
 # Local Claude overrides (personal, not shared)
 .claude/settings.local.json
+
+# Claude Code / AI assistant working files (kept local, not pushed)
+.claude/
+.codex/
+.agents/
+AGENTS.md
+CLAUDE.md
+pipeline_*.log
+tmp/
+.cursor/
+*.cursorrules
+
+# Misc local
+.directory

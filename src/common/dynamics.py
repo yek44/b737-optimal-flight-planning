@@ -107,7 +107,7 @@ def dynamics_np(
     origin: LLAOrigin,
 ) -> np.ndarray:
     """numpy-only wrapper that returns a (6,) array (for RL rollouts / RK4)."""
-    deriv = dynamics_rhs(state, control, ac, wf, origin, math=np)
+    deriv = dynamics_rhs(list(state), list(control), ac, wf, origin, math=np)
     return np.asarray(deriv, dtype=float)
 
 

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from .aircraft import AircraftParams
 from .wind_field import WindField

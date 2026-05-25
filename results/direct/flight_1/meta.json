@@ -1,19 +1,32 @@
 {
   "method": "direct",
   "flight_id": 1,
-  "fuel_total_kg": 8570.569366113858,
-  "duration_s": 13561.375888429273,
-  "cost": 9248.638160535325,
+  "fuel_total_kg": 8560.21179700063,
+  "duration_s": 13544.456165461872,
+  "cost": 9237.434605273946,
   "converged": true,
   "origin_lambda_deg": -4.0,
   "origin_phi_deg": 40.0,
   "solver_meta": {
     "scheme": "hermite-simpson-compressed",
-    "n_nodes": 41,
-    "iter_count": 1718,
+    "n_nodes": 241,
+    "iter_count": 247,
     "return_status": "Solve_Succeeded",
-    "ipopt_linear_solver": "mumps"
+    "ipopt_linear_solver": "mumps",
+    "selected_initial_guess": "cold",
+    "candidate_solutions": [
+      {
+        "initial_guess": "cold",
+        "converged": true,
+        "cost": 9237.434605273946,
+        "fuel_total_kg": 8560.21179700063,
+        "duration_s": 13544.456165461872,
+        "iter_count": 247,
+        "return_status": "Solve_Succeeded",
+        "wall_time_s": 32.123093128204346
+      }
+    ]
   },
-  "n_states": 41,
-  "n_controls": 41
+  "n_states": 241,
+  "n_controls": 241
 }

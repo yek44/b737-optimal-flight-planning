@@ -40,7 +40,7 @@ class InitialGuess:
 def build_initial_guess(
     fp: FlightPlan,
     ac: AircraftParams,
-    n_nodes: int = 61,
+    n_nodes: int = 241,
     v_cruise_mps: float = 235.0,
 ) -> InitialGuess:
     """Construct a great-circle baseline guess for a flight plan.

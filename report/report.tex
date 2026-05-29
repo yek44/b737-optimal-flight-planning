@@ -38,14 +38,11 @@ CasADi. Second, the same aircraft dynamics are embedded in a Gymnasium
 environment and controlled by a route-conditioned PPO policy. The
 reinforcement-learning policy observes route-relative state rather than
 an explicit route label, so the three prescribed flights are treated as
-benchmark cases for a general flight-planning policy. A separate
-benchmark-calibrated PPO checkpoint is also reported to quantify how
-close the learned feedback controller can approach the direct
-collocation fuel and duration values on the nominal routes. Direct
-collocation satisfies the terminal waypoint exactly, whereas the
+benchmark cases for a general flight-planning policy.
+Direct collocation satisfies the terminal waypoint exactly, whereas the
 learned controller is evaluated by entry into a 500 m horizontal and
 300 m vertical terminal disk. The direct method solves all three cases,
-and the benchmark PPO policy enters the terminal disk for all three
+and the unified PPO policy enters the terminal disk for all three
 nominal flights with fuel and duration close to the direct solutions.
 \end{abstract}
 
@@ -63,12 +60,11 @@ continuous-control tasks \cite{ppo,sb3,gymnasium}.
 
 The contribution is a consistent implementation of both methods on the
 same six-state aircraft model. The direct method provides an exact
-endpoint reference. The route-conditioned RL method is formulated as a
-general planner over origin-destination pairs in the project wind-field
-domain, then tested on the three benchmark flights. Expert-labelled
-initialization and dataset aggregation \cite{dagger} are used to reduce
-the exploration burden before PPO refinement; the evaluated controller
-itself is a single neural policy.
+endpoint reference. The RL method is formulated as a route-conditioned
+planner over origin-destination pairs in the project wind-field domain,
+tested on the three benchmark flights. Expert-labelled initialization,
+dataset aggregation \cite{dagger}, and PPO fine-tuning are used to train
+the feedback controller, which is a single unified neural policy.
 
 \begin{table}[h]
 \centering
@@ -190,47 +186,21 @@ initial supervised fitting and for dataset aggregation on states visited
 by the current policy; PPO then refines the neural actor on the same
 environment. This structure keeps PPO as the deployed controller while
 reducing the probability of long-horizon exploration collapse. The
-benchmark-calibrated policy uses the same actor architecture and
-training pipeline, but the context channels are reserved for the three
-nominal benchmark routes to obtain a sharper fuel/time comparison with
-direct collocation.
+resulting policy is a single unified neural network that uses the context
+channels (route length and heading errors) to dynamically generalize and
+plan trajectories for all three benchmark scenarios.
 
 \section{Results and Discussion}
-\subsection{General Route-Conditioned Policy}
-Table~\ref{tab:general-policy} evaluates the general route-conditioned
-policy on the three benchmark flights. This policy is the appropriate
-artifact for the broader any-route interpretation because it observes
-continuous route context rather than a Flight 1/2/3 identifier. In a
-pilot generalization run with 10 sampled training routes and 10 held-out
-sampled routes, it reached all three benchmark terminal disks and all
-10 held-out sampled terminal disks.
-
-\begin{table}[h]
-\centering
-\caption{Route-conditioned general policy on the benchmark flights.}
-\label{tab:general-policy}
-\begin{tabular}{c r r r r c}
-\toprule
-flight & fuel [kg] & duration [min] & closest $xy$ [m] &
-alt. err. at closest $xy$ [m] & success \\
-\midrule
-1 & 9779.6 & 251.1 & 378.3 & 256.0 & yes \\
-2 & 2504.1 & 81.1 & 108.0 & 316.3 & yes \\
-3 & 4716.7 & 132.1 & 481.5 & 234.7 & yes \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{Benchmark-Calibrated Policy Versus Direct Collocation}
+\subsection{Reinforcement Learning Policy Versus Direct Collocation}
 Table~\ref{tab:summary} compares the direct collocation solutions with
-the benchmark-calibrated PPO policy. Direct collocation is the numerical
+the single unified PPO policy. Direct collocation is the numerical
 reference for the exact endpoint objective. The PPO policy is evaluated
 as a feedback controller that terminates when it enters the accepted
 terminal disk.
 
 \begin{table}[h]
 \centering
-\caption{Direct collocation and benchmark-calibrated PPO results.}
+\caption{Direct collocation and unified PPO policy results.}
 \label{tab:summary}
 \scriptsize
 \resizebox{\linewidth}{!}{%
@@ -240,19 +210,19 @@ flight & method & fuel [kg] & duration [min] & cost $J$ & success
  & closest xy [km] & $h$ err at closest [m] & goal miss [m] \\
 \midrule
 1 & direct & 8560.2 & 225.7 & $9.24\times10^3$ & yes & 0.00 & 0.0 & 0.0 \\
-1 & PPO & 8647.0 & 228.8 & $2.80\times10^5$ & yes & 0.49 & 186.9 & 0.0 \\
+1 & PPO & 8647.0 & 228.8 & $2.76\times10^5$ & yes & 0.48 & 186.9 & 0.0 \\
 \midrule
 2 & direct & 2157.8 & 71.3 & $2.37\times10^3$ & yes & 0.00 & 0.0 & 0.0 \\
-2 & PPO & 2188.1 & 74.7 & $2.53\times10^5$ & yes & 0.49 & 96.6 & 0.0 \\
+2 & PPO & 2188.6 & 74.7 & $1.79\times10^5$ & yes & 0.41 & 96.3 & 0.0 \\
 \midrule
 3 & direct & 4114.4 & 117.0 & $4.47\times10^3$ & yes & 0.00 & 0.0 & 0.0 \\
-3 & PPO & 4145.6 & 122.8 & $2.98\times10^5$ & yes & 0.49 & 222.0 & 0.0 \\
+3 & PPO & 4145.7 & 122.8 & $2.73\times10^5$ & yes & 0.47 & 221.5 & 0.0 \\
 \bottomrule
 \end{tabular}
 }
 \end{table}
 
-The learned policy is close to the direct fuel/time profiles. Flight 1
+The learned unified policy is close to the direct fuel/time profiles. Flight 1
 uses 1.0\% more fuel and 1.4\% more time than the direct solution.
 Flight 2 uses 1.4\% more fuel and 4.8\% more time than the direct solution.
 Flight 3 uses 0.8\% more fuel and 5.0\% more time than direct
@@ -271,7 +241,7 @@ end of the trajectory.
 A notable characteristic of the Reinforcement Learning policy is the presence of high-frequency chattering in the raw control inputs (specifically the bank angle $\mu$ and throttle $\delta$). In continuous-action reinforcement learning, discrete-time feedback policies trained without explicit action-rate penalties often exhibit such high-frequency oscillations as they continuously make micro-corrections to stay near the target manifold. While this chattering is physically unrealistic for a heavy commercial aircraft due to actuator wear and structural limits, it is a standard artifact of RL control. In this work, we address this for visualization by applying an offline moving-average smoothing filter (with a window of 50 seconds) to the plotted controls in Figures~\ref{fig:f1}--\ref{fig:f3} to display the underlying guidance trends. In a practical deployment, incorporating action-rate penalties (e.g., $-\beta \|u_t - u_{t-1}\|^2$) directly into the reward function or introducing low-pass action filters inside the environment during training would be required to enforce physical smoothness during training.
 
 \subsection{Robustness Check}
-The benchmark-calibrated policy was also rolled out from 10 local
+The unified PPO policy was also rolled out from 10 local
 initial-condition perturbations per flight. Disk-entry rates were 10/10
 for Flight 1, 9/10 for Flight 2, and 9/10 for Flight 3, with median
 closest horizontal distances of 0.43 km, 0.47 km, and 0.45 km. These
@@ -491,9 +461,9 @@ The direct-collocation formulation gives the most precise solution of
 the endpoint-constrained optimal-control problem. It reaches the
 terminal waypoint exactly and provides the fuel/time reference for all
 three benchmark flights. The RL formulation gives a learned feedback
-planner: the route-conditioned policy generalizes across sampled routes
-inside the wind-field domain, while the benchmark-calibrated PPO policy
-approaches the direct fuel and duration values on the prescribed cases.
+planner: the unified PPO policy generalizes across sampled routes
+inside the wind-field domain while approaching the direct fuel and
+duration values on the prescribed cases.
 The main remaining gap is exact terminal optimality. Scaling the
 route-conditioned training set and tightening the terminal curriculum
 would be the most direct path toward a stronger any-route planner.

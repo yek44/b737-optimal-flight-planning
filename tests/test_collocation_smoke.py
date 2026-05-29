@@ -26,7 +26,7 @@ def _f1_small_solution():
     wf = load_wind_field()
     # 21 nodes is enough to confirm the NLP is well-posed but keeps the
     # test under ~5 s of wall time on a single core.
-    cr = solve_direct(fp, ac, wf, n_nodes=21, warm_start=None, max_iter=500)
+    cr = solve_direct(fp, ac, wf, n_nodes=21, warm_start=None, max_iter=1000)
     fr = to_flight_result(cr, fp, ac, n_nodes=21)
     return fp, ac, fr
 

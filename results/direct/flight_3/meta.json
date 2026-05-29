@@ -23,17 +23,17 @@
         "duration_s": 7022.71277732173,
         "iter_count": 85,
         "return_status": "Solve_Succeeded",
-        "wall_time_s": 13.71032977104187
+        "wall_time_s": 14.980581045150757
       },
       {
         "initial_guess": "warm_from_flight_1",
         "converged": true,
-        "cost": 5338.391823441942,
-        "fuel_total_kg": 4918.732913420608,
-        "duration_s": 8393.178199892162,
-        "iter_count": 145,
+        "cost": 5338.438334136596,
+        "fuel_total_kg": 4918.735869589342,
+        "duration_s": 8394.049290587258,
+        "iter_count": 116,
         "return_status": "Solved_To_Acceptable_Level",
-        "wall_time_s": 19.293346881866455
+        "wall_time_s": 18.570379495620728
       }
     ]
   },

@@ -1,16 +1,16 @@
 {
   "method": "direct",
   "flight_id": 1,
-  "fuel_total_kg": 8560.21179700063,
-  "duration_s": 13544.456165461872,
-  "cost": 9237.434605273946,
+  "fuel_total_kg": 8560.211799242119,
+  "duration_s": 13544.456120699784,
+  "cost": 9237.434605277118,
   "converged": true,
   "origin_lambda_deg": -4.0,
   "origin_phi_deg": 40.0,
   "solver_meta": {
     "scheme": "hermite-simpson-compressed",
     "n_nodes": 241,
-    "iter_count": 247,
+    "iter_count": 259,
     "return_status": "Solve_Succeeded",
     "ipopt_linear_solver": "mumps",
     "selected_initial_guess": "cold",
@@ -18,12 +18,12 @@
       {
         "initial_guess": "cold",
         "converged": true,
-        "cost": 9237.434605273946,
-        "fuel_total_kg": 8560.21179700063,
-        "duration_s": 13544.456165461872,
-        "iter_count": 247,
+        "cost": 9237.434605277118,
+        "fuel_total_kg": 8560.211799242119,
+        "duration_s": 13544.456120699784,
+        "iter_count": 259,
         "return_status": "Solve_Succeeded",
-        "wall_time_s": 32.123093128204346
+        "wall_time_s": 32.625152349472046
       }
     ]
   },

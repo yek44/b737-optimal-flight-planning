@@ -26,44 +26,33 @@ from ..common.results import FlightResult
 from .env import EnvConfig, FlightPlannerEnv
 
 
-def _locate_policy(models_root: Path, flight_id: int) -> Path:
-    """Find the policy to evaluate for ``flight_id``.
+def _locate_policy(models_root: Path) -> Path:
+    """Find the policy to evaluate.
 
-    Preference order:
-    1. ``models_root / "unified" / "policy.zip"`` (project-required single policy).
-    2. ``models_root / f"flight_{flight_id}" / "policy.zip"`` (legacy fallback).
+    Loads the unified single policy at ``models_root / "unified" / "policy.zip"``.
     """
     unified = models_root / "unified" / "policy.zip"
     if unified.exists():
         return unified
-    legacy = models_root / f"flight_{flight_id}" / "policy.zip"
-    if legacy.exists():
-        return legacy
     raise FileNotFoundError(
-        f"No policy.zip under {models_root}/unified/ or "
-        f"{models_root}/flight_{flight_id}/."
+        f"No unified policy.zip found under {models_root}/unified/."
     )
 
 
 def evaluate(flight_id: int, models_root: Path, results_root: Path) -> FlightResult:
-    """Roll the (unified) policy out on one test flight; persist results."""
+    """Roll the unified policy out on one test flight; persist results."""
     cfg = EnvConfig()
-    policy_path = _locate_policy(models_root, flight_id)
+    policy_path = _locate_policy(models_root)
     model = PPO.load(policy_path, device="cpu")
-    is_unified = (policy_path.parent.name == "unified")
-    algo = "unified BC+DAgger" if is_unified else "per-flight BC+DAgger"
+    algo = "unified BC+DAgger"
 
     env = FlightPlannerEnv(flight_id=int(flight_id), cfg=cfg)
     obs, _ = env.reset(seed=0, options={"flight_id": int(flight_id)})
     done = False
     truncated = False
     while not (done or truncated):
-        dxy = float(np.linalg.norm(env.state[:2] - env.dest_xyz[:2]))
-        if dxy <= cfg.terminal_guidance_radius_m:
-            action = env.terminal_guidance_action()
-        else:
-            action, _ = model.predict(obs.reshape(1, -1), deterministic=True)
-            action = action[0]
+        action, _ = model.predict(obs.reshape(1, -1), deterministic=True)
+        action = action[0]
         obs, _, done, truncated, _ = env.step(action)
 
     t, state, control = env.trajectory_arrays()
@@ -94,11 +83,10 @@ def evaluate(flight_id: int, models_root: Path, results_root: Path) -> FlightRes
         solver_meta={
             "algo": algo,
             "policy_path": str(policy_path),
-            "is_unified": is_unified,
+            "is_unified": True,
             "dt_s": cfg.dt_s,
             "n_steps": int(state.shape[0]),
-            "terminal_guidance": True,
-            "terminal_guidance_radius_m": cfg.terminal_guidance_radius_m,
+            "terminal_guidance": False,
             **metrics,
         },
     )

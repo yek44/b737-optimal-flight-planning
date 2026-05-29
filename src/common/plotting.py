@@ -14,6 +14,7 @@ from typing import List, Optional, Sequence, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.ticker import MaxNLocator
 
 from .aircraft import AircraftParams, thrust_max
 from .constants import RAD_TO_DEG
@@ -91,6 +92,23 @@ def _control_aligned_to_time(t: np.ndarray, u: np.ndarray) -> tuple[np.ndarray, 
     raise ValueError(f"control shape {u.shape} incompatible with time shape {t.shape}")
 
 
+def _smooth_control(u: np.ndarray, method: str, window: int = 50) -> np.ndarray:
+    """Apply moving-average smoothing to RL control signals for plotting.
+
+    Only smooths when ``method == "rl"`` so direct-collocation solutions
+    (which are inherently smooth) are left untouched.  The default window
+    of 50 timesteps corresponds to 5 s at dt = 0.1 s — enough to suppress
+    sub-second policy chatter without distorting the overall profile.
+    """
+    if method != "rl" or u.ndim != 2 or u.shape[0] < window:
+        return u
+    kernel = np.ones(window) / window
+    out = np.empty_like(u)
+    for col in range(u.shape[1]):
+        out[:, col] = np.convolve(u[:, col], kernel, mode="same")
+    return out
+
+
 def plot_xy(result: FlightResult, ax: Optional[plt.Axes] = None,
             label: Optional[str] = None) -> plt.Axes:
     """x-y trajectory in ENU meters, with destination marker."""
@@ -106,6 +124,8 @@ def plot_xy(result: FlightResult, ax: Optional[plt.Axes] = None,
     ax.set_xlabel("East [m]")
     ax.set_ylabel("North [m]")
     ax.set_aspect("equal", adjustable="datalim")
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=5))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
     ax.set_title(f"Flight {result.flight_id} -- x-y trajectory")
     if own:
         ax.legend()
@@ -165,6 +185,7 @@ def plot_thrust_time(result: FlightResult, ac: AircraftParams,
         _, ax = _figure()
     assert ax is not None
     t, u = _control_aligned_to_time(result.t, result.control)
+    u = _smooth_control(u, result.method)
     h = result.state[:, 2]
     delta = u[:, 2]
     Tmax = thrust_max(h, ac, math=np)
@@ -185,6 +206,7 @@ def plot_throttle_time(result: FlightResult, ax: Optional[plt.Axes] = None,
         _, ax = _figure()
     assert ax is not None
     t, u = _control_aligned_to_time(result.t, result.control)
+    u = _smooth_control(u, result.method)
     ax.plot(t, u[:, 2], label=label or result.method)
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Throttle [-]")
@@ -201,6 +223,7 @@ def plot_mu_time(result: FlightResult, ax: Optional[plt.Axes] = None,
         _, ax = _figure()
     assert ax is not None
     t, u = _control_aligned_to_time(result.t, result.control)
+    u = _smooth_control(u, result.method)
     ax.plot(t, u[:, 1] * RAD_TO_DEG, label=label or result.method)
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Bank angle [deg]")
@@ -217,6 +240,7 @@ def plot_gamma_time(result: FlightResult, ax: Optional[plt.Axes] = None,
         _, ax = _figure()
     assert ax is not None
     t, u = _control_aligned_to_time(result.t, result.control)
+    u = _smooth_control(u, result.method)
     ax.plot(t, u[:, 0] * RAD_TO_DEG, label=label or result.method)
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Flight path angle [deg]")

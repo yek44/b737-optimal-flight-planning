@@ -1,163 +1,99 @@
 # Wind-Aware B737-800 Flight Planning
 
-[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![flake8](https://img.shields.io/badge/lint-flake8-brightgreen.svg)](https://flake8.pycqa.org/)
-[![mypy](https://img.shields.io/badge/types-mypy-brightgreen.svg)](https://mypy.readthedocs.io/)
-[![pytest](https://img.shields.io/badge/tests-pytest-brightgreen.svg)](https://docs.pytest.org/)
-
-Optimized cruise-phase trajectories for a Boeing 737-800 flying through a
-polynomial wind field, solved end-to-end two different ways and compared
-side-by-side on the same six-state aircraft model.
+Optimized cruise-phase trajectories for a Boeing 737-800 in a
+polynomial wind field. The repository compares an exact-endpoint direct
+collocation solver with a route-conditioned PPO flight-planning policy
+on the same six-state aircraft model.
 
 | Method | Algorithm | Solver | Terminal handling |
 |---|---|---|---|
-| **A. Direct collocation** | Compressed Hermite-Simpson, free final time, 241-node mesh | CasADi + IPOPT/MUMPS | Hard endpoint equality |
-| **B. Single unified policy** | Multi-flight BC on direct-collocation experts + per-flight kNN DAgger + on-policy PPO fine-tuning | Stable-Baselines3 (PPO actor) | 500 m / 300 m acceptance disk + thin deterministic guidance inside 50 km |
+| Direct collocation | Hermite-Simpson transcription, free final time, 241-node mesh | CasADi + IPOPT/MUMPS | Hard endpoint equality |
+| Route-conditioned PPO | Sampled origin-destination training with continuous route context | Stable-Baselines3 PPO | General planner benchmarked on the three prescribed routes |
+| Benchmark PPO | PPO actor initialized from expert-labelled trajectory data and refined on policy | Stable-Baselines3 PPO | Fuel/time comparison on the nominal routes |
 
-The same trained policy flies **all three** test scenarios; per-flight
-policies are forbidden by design.
+The route-conditioned policy is the general flight-planner artifact. It
+samples synthetic routes inside the wind-field domain and observes
+route-relative features instead of a hard-coded Flight 1/2/3 label. The
+current pilot reached 3/3 prescribed benchmark flights and 10/10
+held-out sampled routes.
 
-> Term project for **UCK 439E (Introduction to Optimal Control), Istanbul
-> Technical University**, taught in the Faculty of Aeronautics and
-> Astronautics. The full report lives in [`report/report.pdf`](report/report.pdf).
+## Numerical Results
 
----
+Route-conditioned general policy on the three prescribed benchmarks:
 
-## Headline results
+| Flight | Fuel [kg] | Duration [min] | Closest xy [m] | Success |
+|---:|---:|---:|---:|:---:|
+| 1 | 9779.6 | 251.1 | 378.3 | yes |
+| 2 | 2504.1 | 81.1 | 108.0 | yes |
+| 3 | 4716.7 | 132.1 | 481.5 | yes |
 
-Three prescribed flights, optimized under a fixed polynomial wind field.
-Direct collocation is the locally-optimal benchmark; the unified policy is
-evaluated as a closed-loop feedback controller.
+Benchmark-calibrated PPO policy versus direct collocation:
 
-| Flight | Route | DC fuel | Policy fuel | Policy / DC |
+| Flight | Route | Direct fuel | PPO fuel | PPO / direct |
 |:---:|:---|---:|---:|---:|
-| F1 | ENE long-haul, $\approx 4\,000$ km | 8 560 kg | 8 956 kg | +4.6 % |
-| F2 | SW short-leg with high initial bank | 2 240 kg | 2 302 kg | +2.7 % |
-| F3 | Northbound with terminal descent | 4 114 kg | 4 186 kg | +1.7 % |
+| F1 | East-northeast long route | 8 560 kg | 8 716 kg | +1.8 % |
+| F2 | Southwest short route with sharp turn | 2 240 kg | 2 171 kg | -3.1 % |
+| F3 | Northbound route with terminal descent | 4 114 kg | 4 179 kg | +1.6 % |
 
-All three policy rollouts enter the 500 m horizontal / 300 m vertical
-terminal disk. See `results/compare/summary.md` for the full table and
-the eight required state/control plots under
-`results/compare/flight_{1,2,3}/`.
+Direct collocation enforces the terminal waypoint exactly. The PPO
+policy is evaluated by entry into a 500 m horizontal / 300 m vertical
+terminal disk, so fuel and duration are the most meaningful cross-method
+comparison metrics.
 
-### Cross-method comparison plots
+The final report is [`report/report.pdf`](report/report.pdf).
 
-| Flight 1 ground track | Flight 2 altitude | Flight 3 ground track |
-|:---:|:---:|:---:|
-| ![F1 xy](results/compare/flight_1/xy.png) | ![F2 h](results/compare/flight_2/h_time.png) | ![F3 xy](results/compare/flight_3/xy.png) |
-
----
-
-## What's interesting about this repo
-
-* **A single trained policy flies all three flights.** The environment
-  samples a flight id on every `reset()` when `flight_id="random"`, the
-  BC dataset mixes experts from all three flights, and the same
-  `policy.zip` is evaluated on F1, F2, and F3 in turn. Per-flight
-  policies are explicitly disallowed.
-* **The direct solver is hardened against local optima.** IPOPT
-  acceptable-termination thresholds let Flight-2's cold solve exit at a
-  feasible iterate ($\sim 10^{-9}$ constraint violation) on the
-  optimal-cost plateau instead of failing with
-  `Error_In_Step_Computation`; cold and Flight-1-warm-started solutions
-  are kept as parallel candidates and the lowest-cost converged one is
-  selected.
-* **The policy stack is honest about what it learns.** Behavioural
-  cloning + DAgger ride on top of a direct-collocation manifold, then
-  on-policy PPO fine-tuning with an expert-anchor reward refines the
-  imitation prior. Every stage has a best-of guard, so the deployed
-  checkpoint is never worse than its predecessor.
-* **Out-of-training robustness is reported, not hidden.** The unified
-  policy is rolled out from 20 Gaussian-perturbed initial conditions per
-  flight ($\sigma$ slightly wider than the BC training ball) and the
-  disk-reach rate is published alongside the nominal numbers.
-
----
-
-## Quick start
+## Quick Start
 
 ```bash
 python -m venv .venv
 source .venv/Scripts/activate     # Git Bash on Windows
 # OR  .venv\Scripts\activate.bat  # cmd.exe
-# OR  source .venv/bin/activate   # macOS / Linux
 pip install --upgrade pip
 pip install -r requirements.txt
 pytest tests/ -v
 ```
 
-## Reproducing the report
+## Reproducing the Report
 
 ```bash
-# 1. Direct collocation (3 flights, ~1.5 min CPU total)
+# Direct collocation
 python -m src.direct.solve --flight all --warm-start
 
-# 2. Unified single-policy pipeline (~2 h CPU total on a single core)
-#    Stages: multi-flight DC expert manifold -> BC seed search (9 seeds) ->
-#            per-flight kNN DAgger -> on-policy PPO fine-tuning. Each stage
-#            has a best-of guard that falls back to the previous one.
-python -m src.rl.pipeline_unified
+# Unified RL policy (BC + DAgger + PPO)
+python -m src.rl.pipeline_unified --n-perturb 6 --bc-epochs 400 --dagger-rounds 4 --dagger-epochs 120 --ppo-steps 600000
 
-# 3. Evaluate the single policy on each test flight + robustness sweep
+# Evaluation and report figures
 python -m src.rl.evaluate --flight all
-python -m src.rl.robustness --flight all --n-trials 20
-
-# 4. Cross-method overlays + summary table
 python -m src.compare.make_report_figs
-
-# 5. Recompile the PDF (two pdflatex passes for cross-refs)
 cd report && pdflatex report.tex && pdflatex report.tex
 ```
 
-Outputs land in `results/<method>/flight_<n>/`. The eight required PNGs
-per flight follow the project specification: `xy.png`, `h_time.png`,
-`v_time.png`, `mass_time.png`, `thrust_time.png`, `throttle_time.png`,
-`mu_time.png`, `gamma_time.png`.
+Outputs are written under `results/<method>/flight_<n>/`. Each flight
+has the eight standard plots: `xy.png`, `h_time.png`, `v_time.png`,
+`mass_time.png`, `thrust_time.png`, `throttle_time.png`, `mu_time.png`,
+and `gamma_time.png`.
 
-## Repository layout
+## Repository Layout
 
-```
-src/common/      atmosphere, wind_field, aircraft, dynamics, coordinates, cost, plotting, results
-src/direct/      Hermite-Simpson collocation (CasADi + IPOPT)
-src/rl/          Gymnasium env + BC + DAgger + PPO fine-tuning + evaluation
+```text
+src/common/      atmosphere, wind field, aircraft, dynamics, coordinates, cost, plotting
+src/direct/      Hermite-Simpson direct collocation
+src/rl/          Gymnasium environment, PPO training, policy evaluation
 src/compare/     cross-method overlay figures and summary tables
-data/            flight plans, aircraft parameters, wind field coefficients
-tests/           pytest suites (atmosphere, dynamics, wind, results I/O, DC smoke)
-report/          LaTeX source + final report.pdf
-results/         per-method per-flight outputs (8 plots, npz, metadata)
+data/            flight plans, aircraft parameters, wind-field coefficients
+tests/           pytest suites
+report/          LaTeX source and final PDF
+results/         per-method per-flight outputs
 ```
 
-## Engineering choices
+## Quality Gates
 
-| Choice | Rationale |
-|---|---|
-| Hermite-Simpson with compressed mid-state control | $O(N)$ memory, no extra mid-state controls as decision variables, exact Simpson 1/3 running-cost integration. |
-| State scaling $(x,y/10^5,\,h/10^4,\,V/250,\,m/10^5,\,t/3600)$ | Keeps IPOPT's KKT matrix well-conditioned. |
-| Hard terminal equality on $(x,y,h)$ instead of Mayer squared penalty | The squared-distance Mayer term has huge gradient magnitudes after scaling; equality keeps the active-set behaviour clean. |
-| IPOPT acceptable-termination thresholds | Required for F2 to exit cleanly at a feasible iterate instead of being driven into `Error_In_Step_Computation`. |
-| Flight-1 warm-start kept as a *candidate*, not the default | Each flight prefers its own cold start; the warm-start is only used if cold fails. |
-| BC seed search across 9 seeds, scored on aggregate disk-reach | One bad seed should not sink the unified policy. |
-| Per-flight kNN DAgger labelers | Each flight's covariate-shift correction uses only its own expert manifold so the unified policy is corrected on the right distribution. |
-| PPO fine-tuning with $\log\sigma_0=-2.5$ and expert anchor | Keeps the BC mean nearly intact for the first updates; the anchor mildly penalises drift off the expert manifold. |
-| Best-of guard at every learning stage | The deployed checkpoint is monotone non-decreasing in disk-reach. |
-
-## Quality gates
-
-* `flake8 src/ tests/ --max-line-length=100`
-* `mypy src/ --ignore-missing-imports`
-* `pytest tests/ -v`
-
-Pre-commit, all three must pass.
+```bash
+flake8 src/ tests/ --max-line-length=100 --extend-ignore=E203,W503
+mypy src/ --ignore-missing-imports
+pytest tests/ -v
+```
 
 ## Author
 
-**Yunus Emre Kara** &mdash;
-[GitHub @yek44](https://github.com/yek44) &mdash;
-karay22@itu.edu.tr &mdash;
-M.Sc. student, ITU Faculty of Aeronautics and Astronautics.
-
-## License
-
-[MIT](LICENSE). The project PDF in [`Term Project.pdf`](Term%20Project.pdf)
-is the original ITU course handout and remains the property of its authors.
+Yunus Emre Kara, Istanbul Technical University.

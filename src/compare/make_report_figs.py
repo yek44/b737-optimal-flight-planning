@@ -42,12 +42,8 @@ def _trajectory_metrics(fr: FlightResult, fp) -> dict:
     final_idx = state.shape[0] - 1
     closest_idx = int(np.argmin(dxy))
 
-    terminal_radius = float(
-        fr.solver_meta.get("terminal_radius_m", 10_000.0)
-    )
-    terminal_h_tol = float(
-        fr.solver_meta.get("terminal_h_tol_m", 1_500.0)
-    )
+    terminal_radius = float(fr.solver_meta.get("terminal_radius_m", 500.0))
+    terminal_h_tol = float(fr.solver_meta.get("terminal_h_tol_m", 300.0))
     goal_violation = np.hypot(
         np.maximum(dxy - terminal_radius, 0.0),
         np.maximum(np.abs(h_err) - terminal_h_tol, 0.0),

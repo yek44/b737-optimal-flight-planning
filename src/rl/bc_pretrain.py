@@ -36,7 +36,6 @@ from .env import (
     FlightPlannerEnv,
     config_for_flight,
 )
-from .multi_expert import generate_experts
 
 
 def _expert_to_pairs(fr: FlightResult, env: FlightPlannerEnv
@@ -102,20 +101,21 @@ def _expert_to_pairs(fr: FlightResult, env: FlightPlannerEnv
     env.reset(seed=0, options={"flight_id": fr.flight_id})
 
     obs_list: List[np.ndarray] = []
+    a_list: List[np.ndarray] = []
     n = state_resampled.shape[0]
-    for k in range(n):
-        # Action history at step k = actions taken at steps k-1, k-2, ...
-        # The control at index k is what the policy emits AT step k, so
-        # for the observation at step k the history is steps [k-3, k-2,
-        # k-1] (clamped at zero).
+    step_stride = max(1, int(1.0 / dt))
+    for k in range(0, n, step_stride):
+        # Action history at decision step k contains the decisions at k-1, k-2, ...
         if k == 0:
             hist = None
         else:
-            lo = max(0, k - ACTION_HISTORY_LEN)
-            hist = a_arr[lo:k]
+            lo = max(0, k - ACTION_HISTORY_LEN * step_stride)
+            hist = a_arr[lo:k:step_stride]
         obs_list.append(env.observe_state(state_resampled[k], k, hist))
+        a_list.append(a_arr[k])
     obs_arr = np.stack(obs_list, axis=0).astype(np.float32)
-    return obs_arr, a_arr.astype(np.float32)
+    a_arr = np.stack(a_list, axis=0).astype(np.float32)
+    return obs_arr, a_arr
 
 
 def build_dataset(experts: Sequence[FlightResult],
@@ -163,7 +163,7 @@ def _make_ppo(flight_id: int | str, cfg: EnvConfig, seed: int) -> PPO:
         gamma=cfg.gamma, gae_lambda=0.95, clip_range=0.2,
         ent_coef=0.0, vf_coef=0.5, max_grad_norm=0.5,
         seed=seed, verbose=0,
-        policy_kwargs={"net_arch": [256, 256]},
+        policy_kwargs={"net_arch": [512, 512]},
         device="cpu",
     )
 
@@ -209,7 +209,6 @@ def evaluate_rollout_metrics(
     model: PPO,
     flight_id: int,
     cfg: EnvConfig,
-    use_terminal_guidance: bool = True,
 ) -> dict:
     """Roll a model out deterministically on one flight; return goal metrics."""
     env = FlightPlannerEnv(flight_id=int(flight_id), cfg=cfg)
@@ -217,12 +216,8 @@ def evaluate_rollout_metrics(
     done = False
     trunc = False
     while not (done or trunc):
-        dxy = float(np.linalg.norm(env.state[:2] - env.dest_xyz[:2]))
-        if use_terminal_guidance and dxy <= cfg.terminal_guidance_radius_m:
-            a = env.terminal_guidance_action()
-        else:
-            a, _ = model.predict(obs.reshape(1, -1), deterministic=True)
-            a = a[0]
+        a, _ = model.predict(obs.reshape(1, -1), deterministic=True)
+        a = a[0]
         obs, _, done, trunc, _ = env.step(a)
     return env.trajectory_metrics()
 
@@ -245,7 +240,6 @@ def evaluate_unified_rollout(
     model: PPO,
     cfg: EnvConfig,
     flight_ids: Sequence[int] = FLIGHT_IDS,
-    use_terminal_guidance: bool = True,
 ) -> dict:
     """Run one policy on every test flight and return per-flight + aggregate metrics.
 
@@ -258,10 +252,7 @@ def evaluate_unified_rollout(
     total_score = 0.0
     reached = 0
     for fid in flight_ids:
-        m = evaluate_rollout_metrics(
-            model, int(fid), cfg,
-            use_terminal_guidance=use_terminal_guidance,
-        )
+        m = evaluate_rollout_metrics(model, int(fid), cfg)
         per_flight[int(fid)] = m
         total_score += _rollout_score(m)
         if m["reached_goal"]:
@@ -421,28 +412,14 @@ def bc_seed_search_unified(
 
 
 def main() -> None:
-    """Convenience CLI: generate experts -> train BC -> save policy."""
+    """CLI is intentionally stubbed; the orchestrator is the entrypoint."""
     p = argparse.ArgumentParser(
-        description="Multi-expert BC pretraining for one flight."
+        description="Multi-expert BC pretraining."
     )
-    p.add_argument("--flight", type=int, default=1)
-    p.add_argument("--epochs", type=int, default=600)
-    p.add_argument("--n-perturb", type=int, default=8)
-    p.add_argument("--results-dir", type=str, default="results")
-    p.add_argument("--models-dir", type=str, default="models/rl")
-    args = p.parse_args()
-
-    flight_id = args.flight
-    expert_dir = Path(args.results_dir) / "rl_experts" / f"flight_{flight_id}"
-    expert_dir.mkdir(parents=True, exist_ok=True)
-
-    experts = generate_experts(
-        flight_id=flight_id,
-        out_dir=expert_dir,
-        n_perturbations=args.n_perturb,
+    p.parse_args()
+    raise SystemExit(
+        "BC pretraining CLI is stubbed; use src.rl.pipeline_unified instead."
     )
-    out_dir = Path(args.models_dir) / f"flight_{flight_id}"
-    bc_seed_search(flight_id, experts, out_dir, epochs=args.epochs)
 
 
 if __name__ == "__main__":

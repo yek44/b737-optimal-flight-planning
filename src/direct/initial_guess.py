@@ -66,7 +66,16 @@ def build_initial_guess(
     dx = float(xd) - 0.0
     dy = float(yd) - 0.0
     dist_xy = float(np.hypot(dx, dy))
-    psi_guess = float(np.arctan2(dy, dx))
+    psi_target = float(np.arctan2(dy, dx))
+
+    # Unwrap psi_target relative to psi_0 so the guess takes the shortest
+    # angular path.  Without this, arctan2's [-π,π] range can create a
+    # ~367-degree discontinuity (e.g. Flight 2: psi_0 = 225° but
+    # arctan2 = -142°, which are only 7° apart but numerically 367° away).
+    psi0_rad = fp.initial.psi_deg * DEG_TO_RAD
+    delta_psi = psi_target - psi0_rad
+    delta_psi = (delta_psi + np.pi) % (2.0 * np.pi) - np.pi   # wrap to [-π, π]
+    psi_guess = psi0_rad + delta_psi
 
     # Time-of-flight guess (ground-track distance / cruise speed).
     tf_guess = max(600.0, dist_xy / v_cruise_mps)

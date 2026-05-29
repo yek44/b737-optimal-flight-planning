@@ -7,8 +7,8 @@ fine-tuner reuses the standard env reward and optionally adds an
 "expert anchor" bonus that mildly penalises straying from the nearest
 expert state.
 
-The most common usage is from :mod:`src.rl.pipeline`; this module also
-exposes a thin CLI for ablation experiments.
+The most common usage is from :mod:`src.rl.pipeline_unified`; this module also
+exposes a thin CLI for controlled refinement runs.
 """
 from __future__ import annotations
 
@@ -53,6 +53,10 @@ class ExpertAnchorWrapper(gym.Wrapper):
 
     def step(self, action):  # type: ignore[override]
         obs, reward, term, trunc, info = self.env.step(action)
+        # Turn off anchor bonus near the destination to allow policy adjustments to hit the disk
+        dist_m = info.get("dist_m", 1.0e9)
+        if dist_m < 150_000.0:
+            return obs, reward, term, trunc, info
         s = self.env.unwrapped.state  # 6-D true state
         emb = _embed_state(s).reshape(1, -1)
         dist, _ = self._tree.query(emb, k=1)
@@ -111,11 +115,13 @@ def ppo_fine_tune(
     model = PPO(
         "MlpPolicy", vec_env,
         learning_rate=learning_rate,
-        n_steps=512, batch_size=256, n_epochs=10,
+        n_steps=2048, batch_size=512, n_epochs=10,
         gamma=cfg.gamma, gae_lambda=0.95, clip_range=0.2,
         ent_coef=0.0, vf_coef=0.5, max_grad_norm=0.5,
         verbose=0,
-        policy_kwargs={"net_arch": [128, 128]},
+        # Match the BC actor architecture (see bc_pretrain.py:_make_ppo)
+        # so warm-starting from a BC/DAgger checkpoint is shape-safe.
+        policy_kwargs={"net_arch": [512, 512]},
         device="cpu",
     )
     # Transfer BC/DAgger weights and shrink action std so PPO doesn't
@@ -220,11 +226,14 @@ def ppo_fine_tune_unified(
     model = PPO(
         "MlpPolicy", vec_env,
         learning_rate=learning_rate,
-        n_steps=512, batch_size=256, n_epochs=10,
+        n_steps=2048, batch_size=512, n_epochs=10,
         gamma=cfg.gamma, gae_lambda=0.95, clip_range=0.2,
         ent_coef=0.0, vf_coef=0.5, max_grad_norm=0.5,
         verbose=0,
-        policy_kwargs={"net_arch": [128, 128]},
+        # Match the BC actor architecture (see bc_pretrain.py:166) so the
+        # state_dict copy below does not run into a shape mismatch. If
+        # the BC architecture is ever changed, update both call sites.
+        policy_kwargs={"net_arch": [512, 512]},
         device="cpu",
         seed=seed,
     )
@@ -305,7 +314,7 @@ def main() -> None:
     p.parse_args()
     raise SystemExit(
         "Standalone PPO fine-tune requires the expert dataset; "
-        "use src.rl.pipeline --ppo-steps <N> instead."
+        "use src.rl.pipeline_unified --ppo-steps <N> instead."
     )
 
 

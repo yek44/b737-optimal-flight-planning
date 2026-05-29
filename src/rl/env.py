@@ -111,17 +111,6 @@ class EnvConfig:
     violation_penalty: float = 5.0
     terminal_bonus: float = 20_000.0
     overshoot_corridor_factor: float = 10.0
-    # Switch to deterministic terminal-guidance only inside the final
-    # 50 km approach corridor. Earlier versions used 100 km, which left
-    # most of the descent and final-turn dynamics to the hand-written
-    # guidance layer; a 20 km radius was too aggressive --- the learned
-    # policy could not produce a smooth descent profile by 20 km and
-    # collapsed to 0/3 disk reach during BC + DAgger. The 50 km
-    # compromise gives the policy the cruise leg, the descent initiation,
-    # and most of the final-turn alignment (~5--6 min by policy at
-    # $\sim130$\,m/s); the guidance layer only steers the last ~6 min
-    # onto the 500 m disk.
-    terminal_guidance_radius_m: float = 50_000.0
     # Effective horizon at gamma=0.999 is ~1000 steps = 2000 s; long
     # enough to credit-assign across the dense closing-rate signal
     # without making PPO numerically unstable.
@@ -204,7 +193,6 @@ class FlightPlannerEnv(gym.Env):
         self._closest_dist = float("inf")
         self._prev_dist = 1.0
         self._termination_reason: Optional[str] = None
-        self._prev_terminal_gamma: Optional[float] = None
 
     # ------------------------------------------------------------------
     # internal: rebind state that depends on the active flight
@@ -268,7 +256,6 @@ class FlightPlannerEnv(gym.Env):
         )
         self._closest_dist = self._init_dist
         self._termination_reason = None
-        self._prev_terminal_gamma = None
         return self._observe(), {"flight_id": self.flight_id}
 
     def _to_physical(self, a: np.ndarray) -> np.ndarray:
@@ -427,40 +414,6 @@ class FlightPlannerEnv(gym.Env):
         span = self._u_hi - self._u_lo
         a = 2.0 * (np.asarray(u, dtype=float) - self._u_lo) / span - 1.0
         return np.clip(a, -0.999, 0.999).astype(np.float32)
-
-    def terminal_guidance_action(self) -> np.ndarray:
-        """Simple goal-capture action used inside the terminal corridor."""
-        dx, dy, dh = self.dest_xyz - self.state[:3]
-        dxy = float(np.hypot(dx, dy))
-        target_psi = float(np.arctan2(dy, dx))
-        psi_err = (target_psi - self.state[4] + np.pi) % (2.0 * np.pi) - np.pi
-
-        gamma_cmd = float(np.clip(
-            np.arctan2(dh, max(dxy, 15_000.0)),
-            self._u_lo[0],
-            self._u_hi[0],
-        ))
-        # Exponential moving average to suppress sample-to-sample gamma
-        # jitter inside the terminal corridor. Time constant ~10 s at
-        # dt=1 s; this still tracks the slow descent profile but kills
-        # high-frequency chatter visible on F1's gamma_time plot.
-        alpha = 0.1
-        if self._prev_terminal_gamma is None:
-            self._prev_terminal_gamma = gamma_cmd
-        gamma = alpha * gamma_cmd + (1.0 - alpha) * self._prev_terminal_gamma
-        self._prev_terminal_gamma = gamma
-        mu = np.clip(1.2 * psi_err, self._u_lo[1], self._u_hi[1])
-
-        if dxy < 20_000.0:
-            target_v = 130.0
-        else:
-            target_v = 150.0
-        delta = np.clip(
-            0.30 + 0.008 * (target_v - self.state[3]) + 0.8 * max(gamma, 0.0),
-            self._u_lo[2],
-            self._u_hi[2],
-        )
-        return self.physical_to_action(np.array([gamma, mu, delta], dtype=float))
 
     # ------------------------------------------------------------------
     # Helpers used by `evaluate.py` and the BC/DAgger pipeline

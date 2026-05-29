@@ -437,7 +437,7 @@ def main() -> None:
     p.add_argument("--flight", type=int, default=1)
     p.parse_args()
     raise SystemExit(
-        "DAgger CLI requires expert trajectories; use src.rl.pipeline instead."
+        "DAgger CLI requires expert trajectories; use src.rl.pipeline_unified instead."
     )
 
 

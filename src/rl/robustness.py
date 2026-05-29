@@ -82,12 +82,8 @@ def _rollout_with_ic(model: PPO, flight_id: int, cfg: EnvConfig,
     done = False
     trunc = False
     while not (done or trunc):
-        dxy = float(np.linalg.norm(env.state[:2] - env.dest_xyz[:2]))
-        if dxy <= cfg.terminal_guidance_radius_m:
-            a = env.terminal_guidance_action()
-        else:
-            a, _ = model.predict(obs.reshape(1, -1), deterministic=True)
-            a = a[0]
+        a, _ = model.predict(obs.reshape(1, -1), deterministic=True)
+        a = a[0]
         obs, _, done, trunc, _ = env.step(a)
     metrics = env.trajectory_metrics()
     return {
@@ -109,7 +105,7 @@ def benchmark_flight(flight_id: int, models_root: Path, results_root: Path,
     """Run the perturbed-IC benchmark for one flight."""
     cfg = config_for_flight(flight_id)
     fp_nom = get_flight_plan(flight_id)
-    model = PPO.load(_locate_policy(models_root, flight_id), device="cpu")
+    model = PPO.load(_locate_policy(models_root), device="cpu")
 
     rng = np.random.default_rng(seed)
     trials: List[Dict[str, Any]] = []

@@ -19,21 +19,14 @@ held-out sampled routes.
 
 ## Numerical Results
 
-Route-conditioned general policy on the three prescribed benchmarks:
+Unified PPO policy versus direct collocation on the three benchmark flights
+(same numbers as `results/compare/summary.md` and the report):
 
-| Flight | Fuel [kg] | Duration [min] | Closest xy [m] | Success |
-|---:|---:|---:|---:|:---:|
-| 1 | 9779.6 | 251.1 | 378.3 | yes |
-| 2 | 2504.1 | 81.1 | 108.0 | yes |
-| 3 | 4716.7 | 132.1 | 481.5 | yes |
-
-Benchmark-calibrated PPO policy versus direct collocation:
-
-| Flight | Route | Direct fuel | PPO fuel | PPO / direct |
-|:---:|:---|---:|---:|---:|
-| F1 | East-northeast long route | 8 560 kg | 8 716 kg | +1.8 % |
-| F2 | Southwest short route with sharp turn | 2 240 kg | 2 171 kg | -3.1 % |
-| F3 | Northbound route with terminal descent | 4 114 kg | 4 179 kg | +1.6 % |
+| Flight | Route | Direct fuel | PPO fuel | Fuel | Direct time | PPO time | Time |
+|:---:|:---|---:|---:|---:|---:|---:|---:|
+| F1 | East-northeast long route | 8 560 kg | 8 647 kg | +1.0 % | 225.7 min | 228.8 min | +1.4 % |
+| F2 | Southwest short route with sharp turn | 2 158 kg | 2 189 kg | +1.4 % | 71.3 min | 74.7 min | +4.8 % |
+| F3 | Northbound route with terminal descent | 4 114 kg | 4 146 kg | +0.8 % | 117.0 min | 122.8 min | +5.0 % |
 
 Direct collocation enforces the terminal waypoint exactly. The PPO
 policy is evaluated by entry into a 500 m horizontal / 300 m vertical
